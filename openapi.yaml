@@ -1,0 +1,89 @@
+openapi: 3.0.3
+info:
+  title: AI Translator API
+  version: 0.0.1
+  description: Stateless plain-text translation using server-approved model aliases.
+security:
+  - bearerAuth: []
+paths:
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: List model aliases available to the caller
+      description: Requires the translate:write scope.
+      responses:
+        '200':
+          description: Available aliases
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, provider, maxInputBytes]
+                  properties:
+                    id: {type: string}
+                    provider: {type: string}
+                    maxInputBytes: {type: integer}
+        '401': {description: Missing or invalid bearer token}
+        '403': {description: Required scope missing}
+  /v1/translations:
+    post:
+      operationId: translate
+      summary: Translate one independent text input
+      description: Requires translate:write and any model-specific scope. Source and target tags must be enabled in server configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [text, sourceLanguage, targetLanguage, model]
+              properties:
+                text: {type: string, minLength: 1, maxLength: 10000, example: 'Good morning!'}
+                sourceLanguage: {type: string, maxLength: 20, example: en}
+                targetLanguage: {type: string, maxLength: 20, example: ru}
+                model: {type: string, maxLength: 100, example: translation-fast}
+      responses:
+        '200':
+          description: Complete translation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requestId, translatedText, sourceLanguage, targetLanguage, model]
+                properties:
+                  requestId: {type: string, format: uuid}
+                  translatedText: {type: string}
+                  sourceLanguage: {type: string}
+                  targetLanguage: {type: string}
+                  model: {type: string}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {description: Missing or invalid bearer token}
+        '403': {description: Required scope or model permission missing}
+        '413': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '504': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    Error:
+      description: Request rejected or translation unavailable; code identifies the failure.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [code, message]
+            properties:
+              code: {type: string}
+              message: {type: string}

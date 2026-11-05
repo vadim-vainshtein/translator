@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: translator
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/translator}
+    username: ${DB_USER:translator}
+    password: ${DB_PASSWORD}
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+server:
+  port: ${PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+translator:
+  security:
+    issuer: ${JWT_ISSUER}
+    audience: ${JWT_AUDIENCE:translator-api}
+    jwk-set-uri: ${JWT_JWK_SET_URI}
+  openai:
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1/}
+    api-key: ${OPENAI_API_KEY}
+    timeout: 30s
+    max-response-bytes: 262144
+  limits:
+    requests-per-minute: 20
+    concurrent-requests: 2
+    daily-tokens: 200000
+    lease: 60s
+    max-request-bytes: 65536
+  languages: [en, ru, kk, de, fr, es, it, pt, zh, ja, ko, ar, hi, uk, tr]
+  models:
+    translation-fast:
+      provider: openai
+      model: ${OPENAI_FAST_MODEL:gpt-4.1-mini}
+      max-input-bytes: 20000
+      max-output-tokens: 4096
+      structured-output: true
+    translation-quality:
+      provider: openai
+      model: ${OPENAI_QUALITY_MODEL:gpt-4.1}
+      max-input-bytes: 20000
+      max-output-tokens: 4096
+      structured-output: true
