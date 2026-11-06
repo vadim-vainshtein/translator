@@ -1,23 +1,38 @@
 # AI translator backend
 
-Java 21 / Spring Boot 4.1.2 REST API with PostgreSQL, Flyway migrations, JWT
+Java 21 / Spring Boot 4.1.2 REST API with PostgreSQL, Liquibase migrations, JWT
 authentication, configurable model aliases, an OpenAI Responses adapter, and
 database-backed usage limits. No source text or translated text is stored in the
-database. Translation history, signup/login, billing, streaming, automatic language
+database. Local accounts and refresh-token hashes are persisted separately.
+Translation history, billing, streaming, automatic language
 detection, and automatic provider fallback are outside this MVP.
 
 ## Run locally
 
-Requirements: JDK 21+, Docker with Linux containers, and an OIDC provider issuing
-RS256 access tokens. Maven Wrapper downloads Maven 3.9.16 on first use.
+Requirements: JDK 21+, Docker with Linux containers, and an RSA private key for
+self-issued RS256 access tokens. Maven Wrapper downloads Maven 3.9.16 on first use.
+
+Generate a persistent PKCS#8 RSA key once (OpenSSL example):
+
+```sh
+mkdir secrets
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out secrets/jwt-private.pem
+```
+
+`secrets/`, `*.pem`, and `*.key` are ignored by Git. Restrict private-key file
+permissions to the service account and mount the same key on all application
+instances. The service requires an unencrypted PKCS#8 PEM RSA key of at least
+2048 bits and fails startup if it cannot load it. Production secrets should be
+mounted from your deployment's secret store. A restart must retain the signing
+key; replacing it invalidates existing access tokens.
 
 Set environment variables in the shell that runs the application. For example,
 in PowerShell:
 
 ```powershell
 $env:DB_PASSWORD = 'choose-a-local-development-password'
-$env:JWT_ISSUER = 'https://your-idp.example/realms/translator'
-$env:JWT_JWK_SET_URI = 'https://your-idp.example/realms/translator/protocol/openid-connect/certs'
+$env:JWT_ISSUER = 'translator'
+$env:JWT_PRIVATE_KEY_LOCATION = 'file:./secrets/jwt-private.pem'
 $env:JWT_AUDIENCE = 'translator-api'
 $env:OPENAI_API_KEY = 'your-server-side-api-key'
 docker compose up -d --wait
@@ -33,19 +48,95 @@ lists settings; copying it to `.env` supplies Compose settings only. Spring Boot
 does **not** automatically load `.env` into the Java process. Keep actual secrets
 out of source control. No live model API call is made at startup.
 
-## Identity provider
+## Authentication
 
-Configure an API audience of `translator-api`, expose the provider's JWKS URL, and
-grant callers the `translate:write` scope. Both API endpoints require this scope.
-Use an OAuth2/OIDC flow appropriate to your client (for example authorization code
-with PKCE for a public client). Obtain an **access token**, not an ID token.
+The service owns accounts and issues RS256 JWTs; no external identity provider or
+JWKS endpoint is required. External-provider tokens are no longer accepted.
+Register once, or log in with an existing account:
 
-The backend accepts RS256 only and requires a valid signature, exact issuer,
-expected audience, nonblank subject, and expiration. Spring also validates `nbf`
-when present, with its default clock-skew allowance. Tokens with no expiry are
-rejected. Authentication is stateless: use short-lived tokens; immediate session
-revocation is not implemented here. Browser token storage, refresh tokens, account
-recovery, and MFA belong to the identity provider/client.
+Public registration is disabled by default (`403 REGISTRATION_DISABLED`). An
+operator must explicitly set `REGISTRATION_ENABLED=true` to enable account
+creation, for example during controlled onboarding. Keep it disabled when public
+signup is unnecessary. The signup example below requires that explicit opt-in.
+
+```sh
+curl http://localhost:8080/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"a-long-unique-password"}'
+
+curl http://localhost:8080/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"a-long-unique-password"}'
+```
+
+Registration returns HTTP 201, login returns 200, and both return
+`{accessToken, tokenType, expiresIn, refreshToken, refreshExpiresIn}`. Durations are
+in seconds and `tokenType` is `Bearer`. Usernames contain 3–64 ASCII letters,
+digits, or underscores, are case insensitive, and are stored lowercase. Passwords
+are 12–72 characters and at most 72 UTF-8 bytes; they are hashed using BCrypt
+with cost 12. Invalid login credentials return the same generic 401 response for
+an unknown account and an incorrect password. Duplicate usernames return 409.
+Clients cannot request scopes; issued tokens receive `translate:write`. Additional
+model-specific scopes still deny access unless a trusted token grants them.
+
+Access tokens expire after 15 minutes by default (`JWT_ACCESS_TOKEN_TTL`, allowed
+1 minute–1 hour). Verification uses the local public key and requires RS256,
+exact issuer, configured audience, nonblank subject, and expiration. Expiration
+and `nbf` are checked without clock skew; synchronize instance clocks. The JWT
+subject is the account's stable UUID, so login/refresh retain the same quota owner.
+Changing `JWT_ISSUER` also changes quota identity; keep it stable.
+
+Refresh tokens are opaque 256-bit secrets; only SHA-256 hashes are persisted.
+They are single use and rotate on every successful refresh:
+
+```sh
+curl http://localhost:8080/v1/auth/refresh \
+  -H 'Content-Type: application/json' \
+  -d '{"refreshToken":"YOUR_CURRENT_REFRESH_TOKEN"}'
+
+curl http://localhost:8080/v1/auth/logout \
+  -H 'Content-Type: application/json' \
+  -d '{"refreshToken":"YOUR_CURRENT_REFRESH_TOKEN"}'
+```
+
+Refresh and logout authenticate using the refresh token in the JSON body; send
+these requests without an Authorization header, including after an access token
+expires. Refresh returns a new token pair. Replace both client tokens atomically
+and serialize refresh requests: reusing a consumed token (including a concurrent
+refresh retry) revokes that entire login session's refresh-token family and
+returns 401. Other login sessions remain active. Rotation does not extend the
+family's absolute lifetime: 30 days by default (`JWT_REFRESH_TOKEN_TTL`, allowed
+1 hour–90 days and longer than the access TTL). Expired/revoked/unknown refresh
+tokens return 401. Refresh tokens cannot be used as API bearer tokens.
+
+Logout returns 204 and revokes the entire family, including when given an older
+consumed token. Unknown or already revoked well-formed tokens also return 204.
+Already issued access JWTs remain valid until expiration after logout or replay
+revocation. Token-bearing responses use `Cache-Control: no-store`. Keep tokens
+out of URLs and logs, and store refresh tokens securely on the client. Cookies,
+password reset/recovery, email verification, account management, MFA, and immediate
+access-token revocation are not implemented.
+
+Authentication uses separate PostgreSQL-backed buckets, each allowing 30
+attempts/minute (`AUTH_REQUESTS_PER_MINUTE`). Existing-account login attempts are
+keyed by the account's stable UUID, independent of the client address and username
+case. Unknown usernames share a separate bucket per direct client address, so
+arbitrary names do not create arbitrary database buckets. Signup has its own
+address bucket. Successful refresh admission is keyed by the verified session
+family, while invalid refresh probes use a separate address bucket. Replay
+revocation is checked before session throttling. Logout remains available for
+revocation even when other authentication buckets are exhausted.
+
+Excess requests return `429 AUTH_RATE_LIMIT`. Unrelated failed logins or invalid
+refreshes cannot consume another account's login/session allowance, including
+behind a proxy or NAT. Forwarded headers are not trusted. Signup and unknown-name
+failures still group by a proxy's address; configure trusted per-client ingress
+throttling as an additional deployment defense. Attempts against the same known
+account share its login allowance across addresses; refresh/logout allow an
+existing client to retain or terminate its session during a login attack.
+The initial auth implementation retains account/family/token rows for replay
+detection; an operational retention policy may remove expired families and their
+tokens, but must retain unexpired families and consumed members until expiry.
 
 Terminate HTTPS at a trusted reverse proxy in production, configure ingress body
 and slow-client timeouts, and keep the application and database off the public
@@ -100,6 +191,23 @@ the entire JSON body, 4,096 maximum output tokens, 20 admitted requests/minute,
 2 concurrent requests/user, and 200,000 reserved tokens/user/UTC day. Input
 expansion beyond the output limit produces an error rather than partial success.
 
+Across all accounts and application instances, a shared database admission lock
+also enforces 8 concurrent provider requests (`GLOBAL_CONCURRENT_REQUESTS`) and
+2,000,000 tokens/UTC day (`GLOBAL_DAILY_TOKENS`). Account rotation cannot reset
+these shared ceilings. Set both for the deployment's actual provider budget;
+token limits are conservative usage bounds, not currency-denominated billing.
+
+Request bodies use Servlet nonblocking reads, hold at most 16 admission slots per
+instance (`CONCURRENT_REQUEST_BODIES`), and have a total 5-second upload deadline
+(`REQUEST_BODY_TIMEOUT`, 100ms–30s, subject to the container's timeout-check
+granularity). The deadline does not extend when another byte arrives and ends
+before provider processing. Slots remain held through request completion to bound
+queued body memory. Exhausted slots return `503 UPLOAD_CAPACITY`; expired uploads
+return `408 REQUEST_TIMEOUT`. Protected translation routes authenticate before
+reading a body. Declared oversized bodies are rejected immediately, and chunked
+bodies are limited while streaming. Tomcat body swallowing is disabled so rejected
+incomplete uploads do not tie up workers; rejected requests close the connection.
+
 Errors use `{ "code": "...", "message": "..." }`, except framework-generated
 401/403 responses (standard Spring Security bearer-token responses).
 
@@ -108,12 +216,14 @@ Errors use `{ "code": "...", "message": "..." }`, except framework-generated
 | 400 | `INVALID_REQUEST`, `UNKNOWN_MODEL`, `UNSUPPORTED_LANGUAGE` |
 | 401 | Missing, expired, or invalid JWT |
 | 403 | Missing scope; `MODEL_FORBIDDEN` for model-specific denial |
+| 403 | `REGISTRATION_DISABLED` when public signup is disabled |
+| 408 | `REQUEST_TIMEOUT` for an incomplete/slow request body |
 | 413 | `REQUEST_TOO_LARGE`, `TEXT_TOO_LARGE` |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` |
 | 422 | `TRANSLATION_REFUSED` |
-| 429 | `RATE_LIMIT`, `CONCURRENCY_LIMIT`, `DAILY_QUOTA` |
+| 429 | `RATE_LIMIT`, `CONCURRENCY_LIMIT`, `DAILY_QUOTA`, `GLOBAL_CONCURRENCY_LIMIT`, `GLOBAL_DAILY_QUOTA`, `AUTH_RATE_LIMIT` |
 | 502 | `PROVIDER_ERROR`, `INVALID_PROVIDER_RESPONSE`, `INCOMPLETE_TRANSLATION` |
-| 503 | `PROVIDER_BUSY`, `REQUEST_INTERRUPTED` |
+| 503 | `PROVIDER_BUSY`, `REQUEST_INTERRUPTED`, `UPLOAD_CAPACITY` |
 | 504 | `PROVIDER_TIMEOUT` |
 
 ## Provider and prompt policy
@@ -144,8 +254,9 @@ privacy requirements before sending sensitive documents.
 
 ## PostgreSQL usage accounting
 
-Admission locks one account row, checks limits, and inserts a request reservation
-in one transaction. This works across multiple application instances. The account
+Admission locks the deployment-wide quota row, then the account row, checks both
+sets of limits, and inserts a request reservation in one transaction. This works
+across multiple application instances sharing the database. The account
 key is SHA-256 of trusted issuer plus subject; no user-provided account ID is used.
 Rejected requests do not invoke the provider or create usage rows.
 
@@ -163,11 +274,43 @@ process; they retain the charged reservation. Lease duration must exceed the
 provider deadline by at least 10 seconds. Defaults are a 30-second deadline and
 a 60-second lease. Minute rate limits count admitted calls, including failures.
 
-Only metadata is persisted: timestamps, hashed account identifier, model and prompt
+Only translation metadata is persisted for translation calls: timestamps, hashed account identifier, model and prompt
 versions, languages, state, usage, and error code. Logs contain request IDs,
 model aliases, timing, usage, and outcomes. Metadata retention/archival is an
 operational follow-up; the MVP retains it until an operator applies a retention
 policy. Keep any cleanup policy long enough to preserve active daily/minute limits.
+
+## Database migrations
+
+Liquibase runs automatically on application startup using
+`src/main/resources/db/changelog/db.changelog-master.xml`. The initial changeset
+preserves the PostgreSQL tables, constraints, and indexes from the original Flyway
+V1 migration. Add future changesets to new changelog files and include them in the
+master; do not edit already applied changesets.
+
+An empty database needs no preparation. An existing database initialized by Flyway
+must be baselined once before starting this version. Stop application instances,
+back up the database, and verify that Flyway V1 completed successfully and its
+schema matches `changes/001-translation-metadata.xml`, including both indexes and
+all constraints. Do not baseline an empty, partial, or different schema.
+
+Using a Liquibase CLI version compatible with the application's managed
+`liquibase-core` version and the PostgreSQL JDBC driver on its classpath, set
+`LIQUIBASE_COMMAND_URL`, `LIQUIBASE_COMMAND_USERNAME`, and
+`LIQUIBASE_COMMAND_PASSWORD` for that existing database. From the repository root,
+run the baseline against **only the initial changelog**, so future changesets are
+not accidentally marked as applied:
+
+```powershell
+liquibase --changelog-file=src/main/resources/db/changelog/changes/001-translation-metadata.xml changelog-sync
+```
+
+The initial changelog has a fixed logical path, so CLI baselining and application
+startup identify the same changeset. `changelog-sync` records it in Liquibase's
+`databasechangelog` table without executing the schema-creation SQL. Retain
+`flyway_schema_history` for audit; the application no longer runs Flyway. Start
+the application normally after the baseline. These steps are an operator action;
+the application does not automatically adopt existing tables.
 
 ## Tests
 
@@ -176,10 +319,17 @@ policy. Keep any cleanup policy long enough to preserve active daily/minute limi
 ```
 
 Docker must be available. PostgreSQL integration tests use Testcontainers with
-`postgres:17-alpine`, apply the production Flyway migration, and fail rather than
+`postgres:17-alpine`, apply the production Liquibase changelog, and fail rather than
 silently skip when Docker is unavailable. They exercise the real HTTP API,
-cryptographically signed JWTs/JWKS, permissions, validation, concurrent quota
-admission, lease expiry, daily budgets, rate limits, and metadata persistence.
+local RSA signing and verification, registration/login, hashed credentials,
+refresh rotation/replay/concurrency/expiry/logout, auth throttling, permissions,
+validation, concurrent quota
+admission across accounts, global daily budgets, lease expiry, rate limits, and
+metadata persistence. Security regressions also use a two-worker HTTP server to
+exercise incomplete/trickled uploads, bounded body admission, disconnect cleanup,
+chunked/declared oversized bodies, and successful HTTP connection reuse. They
+cover default-disabled signup, login/session throttle isolation behind one client
+address, and refresh replay revocation even when session admission is exhausted.
 
 If your shell inherits `MAVEN_ARGS` that redirects dependency downloads to an
 unavailable corporate repository, clear it for the current shell with

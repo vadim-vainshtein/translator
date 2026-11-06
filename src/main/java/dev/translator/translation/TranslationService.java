@@ -55,7 +55,7 @@ public class TranslationService {
     private String accountId(JwtAuthenticationToken authentication) {
         try {
             var jwt = authentication.getToken();
-            byte[] value = (jwt.getIssuer() + "\0" + jwt.getSubject()).getBytes(StandardCharsets.UTF_8);
+            byte[] value = (jwt.getClaimAsString("iss") + "\0" + jwt.getSubject()).getBytes(StandardCharsets.UTF_8);
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 unavailable", exception);

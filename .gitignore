@@ -4,3 +4,6 @@
 /.env
 *.log
 /.m2/
+/secrets/
+*.pem
+*.key

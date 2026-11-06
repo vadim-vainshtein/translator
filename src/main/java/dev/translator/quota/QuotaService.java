@@ -24,6 +24,8 @@ public class QuotaService {
 
     @Transactional
     public UUID reserve(String account, String alias, TranslatorProperties.Model model, TranslationCommand command) {
+        // One database lock serializes admission across accounts and application instances.
+        jdbc.queryForObject("SELECT singleton FROM quota_global WHERE singleton = 1 FOR UPDATE", Integer.class);
         jdbc.update("INSERT INTO quota_account(account_id) VALUES (?) ON CONFLICT DO NOTHING", account);
         jdbc.queryForObject("SELECT account_id FROM quota_account WHERE account_id = ? FOR UPDATE", String.class, account);
         OffsetDateTime now = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
@@ -40,6 +42,15 @@ public class QuotaService {
         if (((Number) counts.get("running")).longValue() >= limits.concurrentRequests()) throw exceeded("CONCURRENCY_LIMIT", "Too many translations are already running.");
         long reserved = TranslationPrompt.tokenReservation(command, model.maxOutputTokens());
         if (((Number) counts.get("tokens")).longValue() > limits.dailyTokens() - reserved) throw exceeded("DAILY_QUOTA", "Daily translation token quota exceeded.");
+        var global = jdbc.queryForMap("""
+                SELECT count(*) FILTER (WHERE status = 'RUNNING' AND lease_expires_at > ?) AS running,
+                       coalesce(sum(charged_tokens) FILTER (WHERE created_at >= ?), 0) AS tokens
+                FROM translation_request WHERE created_at >= ? OR status = 'RUNNING'
+                """, now, day, day);
+        if (((Number) global.get("running")).longValue() >= limits.globalConcurrentRequests())
+            throw exceeded("GLOBAL_CONCURRENCY_LIMIT", "The translation service is at capacity.");
+        if (((Number) global.get("tokens")).longValue() > limits.globalDailyTokens() - reserved)
+            throw exceeded("GLOBAL_DAILY_QUOTA", "The service translation budget is exhausted.");
         UUID requestId = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO translation_request(request_id, account_id, model_alias, provider, provider_model,

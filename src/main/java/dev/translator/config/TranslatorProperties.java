@@ -24,7 +24,20 @@ public record TranslatorProperties(
                 && limits.lease().compareTo(openai.timeout().plusSeconds(10)) >= 0;
     }
 
-    public record Security(@NotBlank String issuer, @NotBlank String audience, @NotBlank String jwkSetUri) {}
+    public record Security(@NotBlank String issuer, @NotBlank String audience,
+                           @NotBlank String privateKeyLocation, @NotNull Duration accessTokenTtl,
+                           @NotNull Duration refreshTokenTtl, @Min(1) @Max(10000) int authRequestsPerMinute,
+                           boolean registrationEnabled) {
+        @AssertTrue(message = "access TTL must be 1 minute to 1 hour; refresh TTL must be 1 hour to 90 days and exceed access TTL")
+        public boolean isValidTokenLifetime() {
+            return accessTokenTtl != null && refreshTokenTtl != null
+                    && accessTokenTtl.compareTo(Duration.ofMinutes(1)) >= 0
+                    && accessTokenTtl.compareTo(Duration.ofHours(1)) <= 0
+                    && refreshTokenTtl.compareTo(Duration.ofHours(1)) >= 0
+                    && refreshTokenTtl.compareTo(Duration.ofDays(90)) <= 0
+                    && refreshTokenTtl.compareTo(accessTokenTtl) > 0;
+        }
+    }
 
     public record Openai(@NotNull URI baseUrl, @NotBlank String apiKey, @NotNull Duration timeout,
                          @Min(1024) @Max(1048576) int maxResponseBytes) {
@@ -43,7 +56,15 @@ public record TranslatorProperties(
 
     public record Limits(@Min(1) int requestsPerMinute, @Min(1) int concurrentRequests,
                          @Min(1) long dailyTokens, @NotNull Duration lease,
-                         @Min(1024) @Max(1048576) int maxRequestBytes) {}
+                         @Min(1024) @Max(1048576) int maxRequestBytes,
+                         @Min(1) int globalConcurrentRequests, @Min(1) long globalDailyTokens,
+                         @NotNull Duration bodyTimeout, @Min(1) @Max(1024) int concurrentBodies) {
+        @AssertTrue(message = "body timeout must be between 100 milliseconds and 30 seconds")
+        public boolean isValidBodyTimeout() {
+            return bodyTimeout != null && bodyTimeout.compareTo(Duration.ofMillis(100)) >= 0
+                    && bodyTimeout.compareTo(Duration.ofSeconds(30)) <= 0;
+        }
+    }
 
     public record Model(@Pattern(regexp = "openai") @NotBlank String provider,
                         @NotBlank @Size(max = 200) String model,

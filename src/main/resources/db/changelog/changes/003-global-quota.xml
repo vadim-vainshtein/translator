@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="003-global-quota" author="translator">
+        <sql><![CDATA[
+CREATE TABLE quota_global (singleton integer PRIMARY KEY CHECK (singleton = 1));
+INSERT INTO quota_global(singleton) VALUES (1);
+CREATE INDEX translation_request_created ON translation_request(created_at);
+CREATE INDEX translation_request_global_running ON translation_request(lease_expires_at) WHERE status = 'RUNNING';
+CREATE INDEX auth_rate_limit_window ON auth_rate_limit(window_started_at);
+        ]]></sql>
+    </changeSet>
+</databaseChangeLog>

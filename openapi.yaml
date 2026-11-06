@@ -6,6 +6,74 @@ info:
 security:
   - bearerAuth: []
 paths:
+  /v1/auth/register:
+    post:
+      operationId: register
+      summary: Create a local account and issue a token pair
+      description: Disabled by default; requires explicit REGISTRATION_ENABLED=true. Case-insensitive username. Grants only translate:write. Signup has its own per-address rate limit; all accounts share deployment-wide translation budgets.
+      security: []
+      requestBody: {$ref: '#/components/requestBodies/Credentials'}
+      responses:
+        '201': {$ref: '#/components/responses/Tokens'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {description: Public registration disabled (REGISTRATION_DISABLED)}
+        '409': {description: Username unavailable}
+        '408': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/auth/login:
+    post:
+      operationId: login
+      summary: Authenticate a local account and issue a token pair
+      description: Creates an independent refresh-token family. Invalid username/password returns a generic 401. Existing accounts have independent per-account rate limits; unknown usernames use a separate per-address bucket.
+      security: []
+      requestBody: {$ref: '#/components/requestBodies/Credentials'}
+      responses:
+        '200': {$ref: '#/components/responses/Tokens'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '408': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/auth/refresh:
+    post:
+      operationId: refresh
+      summary: Exchange a single-use refresh token for a new token pair
+      description: Send without an Authorization header. Rotates the refresh token without extending the absolute family expiry. Valid sessions have independent family rate limits; invalid probes use a separate per-address bucket. A consumed-token replay revokes the entire family even if session admission is throttled. Invalid tokens return 401 unless invalid-probe throttling returns 429.
+      security: []
+      requestBody: {$ref: '#/components/requestBodies/RefreshToken'}
+      responses:
+        '200': {$ref: '#/components/responses/Tokens'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '408': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke a refresh-token family
+      description: Send without an Authorization header. An older consumed member can revoke the family. Well-formed unknown or already revoked tokens return 204. Logout is independent of exhausted login/refresh buckets. Existing access tokens remain valid until their expiration.
+      security: []
+      requestBody: {$ref: '#/components/requestBodies/RefreshToken'}
+      responses:
+        '204': {description: Refresh session revoked or already unavailable}
+        '400': {$ref: '#/components/responses/Error'}
+        '408': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /v1/models:
     get:
       operationId: listModels
@@ -31,7 +99,7 @@ paths:
     post:
       operationId: translate
       summary: Translate one independent text input
-      description: Requires translate:write and any model-specific scope. Source and target tags must be enabled in server configuration.
+      description: Requires translate:write and any model-specific scope. Source and target tags must be enabled in server configuration. Both account and deployment-wide concurrency/daily token limits apply. Request bodies have bounded admission and a total upload deadline.
       requestBody:
         required: true
         content:
@@ -62,6 +130,7 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '401': {description: Missing or invalid bearer token}
         '403': {description: Required scope or model permission missing}
+        '408': {$ref: '#/components/responses/Error'}
         '413': {$ref: '#/components/responses/Error'}
         '415': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/Error'}
@@ -71,12 +140,52 @@ paths:
         '503': {$ref: '#/components/responses/Error'}
         '504': {$ref: '#/components/responses/Error'}
 components:
+  requestBodies:
+    Credentials:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [username, password]
+            properties:
+              username: {type: string, pattern: '^[A-Za-z0-9_]{3,64}$', description: Case-insensitive local username}
+              password: {type: string, format: password, minLength: 12, maxLength: 72, description: At most 72 UTF-8 bytes; BCrypt passwords are not truncated}
+    RefreshToken:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [refreshToken]
+            properties:
+              refreshToken: {type: string, pattern: '^[A-Za-z0-9_-]{43}$', description: Opaque single-use refresh secret}
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
   responses:
+    Tokens:
+      description: Self-issued access JWT and opaque refresh token; all durations in seconds. Store securely and replace both tokens after refresh.
+      headers:
+        Cache-Control:
+          schema: {type: string, enum: [no-store]}
+        Pragma:
+          schema: {type: string, enum: [no-cache]}
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [accessToken, tokenType, expiresIn, refreshToken, refreshExpiresIn]
+            properties:
+              accessToken: {type: string, description: RS256 JWT with issuer, audience, stable UUID subject, expiry and translate:write scope}
+              tokenType: {type: string, enum: [Bearer]}
+              expiresIn: {type: integer, format: int64, minimum: 1, example: 900}
+              refreshToken: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
+              refreshExpiresIn: {type: integer, format: int64, minimum: 0, example: 2592000}
     Error:
       description: Request rejected or translation unavailable; code identifies the failure.
       content:

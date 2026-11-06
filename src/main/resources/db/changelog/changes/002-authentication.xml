@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd"
+                   logicalFilePath="db/changelog/changes/002-authentication.xml">
+    <changeSet id="002-authentication" author="translator">
+        <sql splitStatements="true"><![CDATA[
+CREATE TABLE auth_user (
+    user_id uuid PRIMARY KEY,
+    username varchar(64) NOT NULL UNIQUE,
+    password_hash varchar(100) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TABLE auth_refresh_family (
+    family_id uuid PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES auth_user(user_id),
+    expires_at timestamptz NOT NULL,
+    revoked_at timestamptz
+);
+CREATE INDEX auth_refresh_family_user ON auth_refresh_family(user_id);
+CREATE TABLE auth_refresh_token (
+    token_hash varchar(64) PRIMARY KEY,
+    family_id uuid NOT NULL REFERENCES auth_refresh_family(family_id),
+    consumed_at timestamptz
+);
+CREATE INDEX auth_refresh_token_family ON auth_refresh_token(family_id);
+CREATE TABLE auth_rate_limit (
+    client_hash varchar(64) PRIMARY KEY,
+    window_started_at timestamptz NOT NULL,
+    attempts integer NOT NULL CHECK (attempts > 0)
+);
+        ]]></sql>
+    </changeSet>
+</databaseChangeLog>
