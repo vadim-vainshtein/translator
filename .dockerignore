@@ -1,0 +1,17 @@
+# Only build inputs enter the context; local secrets and caches stay on the host.
+*
+!.mvn/
+!.mvn/wrapper/
+!.mvn/wrapper/maven-wrapper.properties
+!mvnw
+!pom.xml
+!src/
+!src/main/
+!src/main/**
+
+# Exclude secret files even if accidentally placed among application sources.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/secrets/

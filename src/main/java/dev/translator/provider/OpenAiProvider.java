@@ -46,7 +46,7 @@ public class OpenAiProvider implements TranslationProvider {
         try {
             var response = send(request(command, model));
             requireSuccessfulResponse(response.statusCode());
-            return payload.parse(response.body());
+            return payload.parse(response.body(), command);
         } catch (IOException exception) {
             throw failure(
                     HttpStatus.BAD_GATEWAY,

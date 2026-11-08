@@ -42,17 +42,14 @@ public class AuthService {
     }
 
     @Transactional
-    public Tokens register(String username, String password) {
-        requireRegistrationEnabled();
+    public void register(String username, String password) {
         validatePassword(password);
-        UUID user = UUID.randomUUID();
-        boolean created =
-                repository.createUser(user, canonical(username), passwords.encode(password));
-        if (!created) {
+        String name = canonical(username);
+        if (AdminAccount.USERNAME.equals(name)
+                || !repository.createUser(UUID.randomUUID(), name, passwords.encode(password))) {
             throw new ApiException(
                     HttpStatus.CONFLICT, "USERNAME_UNAVAILABLE", "Username is unavailable.");
         }
-        return newSession(user);
     }
 
     public Tokens login(String username, String password, String clientAddress) {
@@ -112,15 +109,6 @@ public class AuthService {
         OffsetDateTime expires = now.plus(security.refreshTokenTtl());
         repository.createFamily(family, user, expires);
         return tokens.issue(user, family, now, expires);
-    }
-
-    private void requireRegistrationEnabled() {
-        if (!security.registrationEnabled()) {
-            throw new ApiException(
-                    HttpStatus.FORBIDDEN,
-                    "REGISTRATION_DISABLED",
-                    "Public registration is disabled.");
-        }
     }
 
     private static String canonical(String username) {

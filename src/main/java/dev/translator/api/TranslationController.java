@@ -1,10 +1,13 @@
 package dev.translator.api;
 
+import dev.translator.quota.CostSummary;
 import dev.translator.translation.ModelRegistry;
 import dev.translator.translation.TranslationCommand;
+import dev.translator.translation.TranslationLanguage;
 import dev.translator.translation.TranslationService;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
@@ -34,22 +37,40 @@ public class TranslationController {
         return models.available(authentication);
     }
 
+    @GetMapping(value = "/translation-cost", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CostSummary translationCost(JwtAuthenticationToken authentication) {
+        return service.costSummary(authentication);
+    }
+
     @PostMapping(
             value = "/translations",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public TranslationService.TranslationResult translate(
             @Valid @RequestBody TranslationRequest request, JwtAuthenticationToken authentication) {
+        boolean detectSourceLanguage = Boolean.TRUE.equals(request.detectSourceLanguage());
         return service.translate(
                 new TranslationCommand(
-                        request.text(), request.sourceLanguage(), request.targetLanguage()),
+                        request.text(),
+                        detectSourceLanguage ? null : request.sourceLanguage().strip(),
+                        request.targetLanguage().strip(),
+                        detectSourceLanguage,
+                        Boolean.TRUE.equals(request.includeUsage())),
                 request.model(),
                 authentication);
     }
 
     public record TranslationRequest(
             @NotBlank @Size(max = 10000) String text,
-            @NotBlank @Size(max = 20) String sourceLanguage,
-            @NotBlank @Size(max = 20) String targetLanguage,
-            @NotBlank @Size(max = 100) String model) {}
+            @Size(max = TranslationLanguage.MAX_LENGTH) String sourceLanguage,
+            @NotBlank @Size(max = TranslationLanguage.MAX_LENGTH) String targetLanguage,
+            @NotBlank @Size(max = 100) String model,
+            Boolean detectSourceLanguage,
+            Boolean includeUsage) {
+        @AssertTrue
+        public boolean isSourceLanguagePresent() {
+            return Boolean.TRUE.equals(detectSourceLanguage)
+                    || (sourceLanguage != null && !sourceLanguage.isBlank());
+        }
+    }
 }

@@ -18,7 +18,7 @@ public class AuthRepository {
         return jdbc.update(
                         """
                         INSERT INTO auth_user(user_id, username, password_hash) VALUES (?, ?, ?)
-                        ON CONFLICT (username) DO NOTHING
+                        ON CONFLICT DO NOTHING
                         """,
                         user,
                         username,

@@ -25,7 +25,6 @@ translator:
     access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:15m}
     refresh-token-ttl: ${JWT_REFRESH_TOKEN_TTL:30d}
     auth-requests-per-minute: ${AUTH_REQUESTS_PER_MINUTE:30}
-    registration-enabled: ${REGISTRATION_ENABLED:false}
   openai:
     base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1/}
     api-key: ${OPENAI_API_KEY}
@@ -41,7 +40,16 @@ translator:
     global-daily-tokens: ${GLOBAL_DAILY_TOKENS:2000000}
     body-timeout: ${REQUEST_BODY_TIMEOUT:5s}
     concurrent-bodies: ${CONCURRENT_REQUEST_BODIES:16}
-  languages: [en, ru, kk, de, fr, es, it, pt, zh, ja, ko, ar, hi, uk, tr]
+  pricing:
+    models:
+      "[gpt-4.1-mini]":
+        input-usd-per-million: 0.40
+        cached-input-usd-per-million: 0.10
+        output-usd-per-million: 1.60
+      "[gpt-4.1]":
+        input-usd-per-million: 2.00
+        cached-input-usd-per-million: 0.50
+        output-usd-per-million: 8.00
   models:
     translation-fast:
       provider: openai

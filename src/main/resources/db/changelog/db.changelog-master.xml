@@ -5,4 +5,5 @@
     <include file="changes/001-translation-metadata.xml" relativeToChangelogFile="true"/>
     <include file="changes/002-authentication.xml" relativeToChangelogFile="true"/>
     <include file="changes/003-global-quota.xml" relativeToChangelogFile="true"/>
+    <include file="changes/004-translation-cost.xml" relativeToChangelogFile="true"/>
 </databaseChangeLog>

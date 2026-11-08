@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="004-translation-cost" author="translator">
+        <sql><![CDATA[
+ALTER TABLE translation_request
+    ALTER COLUMN source_language TYPE varchar(80),
+    ALTER COLUMN source_language DROP NOT NULL,
+    ALTER COLUMN target_language TYPE varchar(80),
+    ADD COLUMN cached_input_tokens bigint CHECK (cached_input_tokens >= 0),
+    ADD COLUMN cost_usd numeric CHECK (cost_usd >= 0);
+        ]]></sql>
+    </changeSet>
+</databaseChangeLog>

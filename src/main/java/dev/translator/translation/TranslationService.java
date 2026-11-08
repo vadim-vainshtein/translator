@@ -1,8 +1,14 @@
 package dev.translator.translation;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import dev.translator.api.ApiException;
 import dev.translator.config.TranslatorProperties;
+import dev.translator.quota.CostSummary;
 import dev.translator.quota.QuotaService;
+import dev.translator.translation.TranslationProvider.ProviderFailure;
+import dev.translator.translation.TranslationProvider.ProviderUsage;
+import dev.translator.translation.TranslationProvider.UsageExample;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,11 +16,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
-import java.util.Set;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -22,13 +29,16 @@ public class TranslationService {
     private static final Logger log = LoggerFactory.getLogger(TranslationService.class);
     private final ModelRegistry registry;
     private final QuotaService quota;
-    private final Set<String> languages;
+    private final TranslationPricing pricing;
 
-    public TranslationService(
-            ModelRegistry registry, QuotaService quota, TranslatorProperties properties) {
+    public TranslationService(ModelRegistry registry, QuotaService quota, TranslationPricing pricing) {
         this.registry = registry;
         this.quota = quota;
-        this.languages = Set.copyOf(properties.languages());
+        this.pricing = pricing;
+    }
+
+    public CostSummary costSummary(JwtAuthenticationToken authentication) {
+        return quota.costSummary(accountId(authentication));
     }
 
     public TranslationResult translate(
@@ -40,11 +50,15 @@ public class TranslationService {
         long started = System.nanoTime();
         try {
             var result = registry.provider(model).translate(command, model);
-            quota.success(requestId, result);
-            return completed(requestId, alias, command, result, started);
+            BigDecimal costUsd = pricing.costUsd(model.model(), result.usage());
+            quota.success(requestId, result, costUsd);
+            return completed(requestId, alias, command, result, costUsd, started);
         } catch (RuntimeException exception) {
             String code = exception instanceof ApiException api ? api.code() : "INTERNAL_ERROR";
-            quota.failure(requestId, code);
+            ProviderUsage usage = exception instanceof ProviderFailure failure
+                    ? failure.usage()
+                    : ProviderUsage.UNKNOWN;
+            quota.failure(requestId, code, usage, pricing.costUsd(model.model(), usage));
             log.info(
                     "Translation request={} model={} outcome={} durationMs={}",
                     requestId,
@@ -56,12 +70,12 @@ public class TranslationService {
     }
 
     private void validate(TranslationCommand command, TranslatorProperties.Model model) {
-        if (!languages.contains(command.sourceLanguage())
-                || !languages.contains(command.targetLanguage())) {
+        if ((!command.detectSourceLanguage() && !TranslationLanguage.isValid(command.sourceLanguage()))
+                || !TranslationLanguage.isValid(command.targetLanguage())) {
             throw new ApiException(
                     HttpStatus.BAD_REQUEST,
                     "UNSUPPORTED_LANGUAGE",
-                    "Select a supported source and target language.");
+                    "Use a language name or code for source and target languages.");
         }
         if (command.text().getBytes(StandardCharsets.UTF_8).length > model.maxInputBytes()) {
             throw new ApiException(
@@ -76,6 +90,7 @@ public class TranslationService {
             String alias,
             TranslationCommand command,
             TranslationProvider.ProviderResult result,
+            BigDecimal costUsd,
             long started) {
         log.info(
                 "Translation request={} model={} outcome=SUCCEEDED durationMs={} inputTokens={}"
@@ -83,14 +98,17 @@ public class TranslationService {
                 requestId,
                 alias,
                 (System.nanoTime() - started) / 1_000_000,
-                result.inputTokens(),
-                result.outputTokens());
+                result.usage().inputTokens(),
+                result.usage().outputTokens());
         return new TranslationResult(
                 requestId,
                 result.translatedText(),
-                command.sourceLanguage(),
+                command.detectSourceLanguage() ? result.detectedSourceLanguage() : command.sourceLanguage(),
                 command.targetLanguage(),
-                alias);
+                alias,
+                costUsd,
+                result.alternatives(),
+                result.examples());
     }
 
     private String accountId(JwtAuthenticationToken authentication) {
@@ -110,5 +128,10 @@ public class TranslationService {
             String translatedText,
             String sourceLanguage,
             String targetLanguage,
-            String model) {}
+            String model,
+            BigDecimal costUsd,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY)
+            List<String> alternatives,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY)
+            List<UsageExample> examples) {}
 }

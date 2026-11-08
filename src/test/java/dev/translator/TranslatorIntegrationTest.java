@@ -16,6 +16,7 @@ import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpServer;
 
 import dev.translator.api.ApiException;
+import dev.translator.auth.AuthRepository;
 import dev.translator.config.TranslatorProperties;
 import dev.translator.quota.QuotaService;
 import dev.translator.translation.TranslationCommand;
@@ -38,6 +39,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
@@ -77,6 +79,8 @@ class TranslatorIntegrationTest {
     static final AtomicReference<String> capturedRequest = new AtomicReference<>();
     static final HttpServer upstream = server();
     static final String issuer = "translator";
+    static final String adminPassword = "test-only-admin-password";
+    static final String userPassword = "correct horse battery";
     static final ObjectMapper json = new ObjectMapper();
     final HttpClient http = HttpClient.newHttpClient();
 
@@ -84,6 +88,7 @@ class TranslatorIntegrationTest {
     int port;
 
     @Autowired JdbcTemplate jdbc;
+    @Autowired AuthRepository authRepository;
     @Autowired QuotaService quota;
     @Autowired TranslatorProperties properties;
     @Autowired SpringLiquibase liquibase;
@@ -94,7 +99,7 @@ class TranslatorIntegrationTest {
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("translator.security.audience", () -> "translator-api");
-        registry.add("translator.security.registration-enabled", () -> "true");
+        registry.add("ADMIN_PASSWORD", () -> adminPassword);
         registry.add("translator.security.private-key-location", () -> privateKeyLocation);
         registry.add("translator.openai.base-url", () -> base() + "/v1/");
         registry.add("translator.openai.api-key", () -> "test-only-key");
@@ -104,6 +109,7 @@ class TranslatorIntegrationTest {
         registry.add("translator.limits.global-daily-tokens", () -> "300000");
         registry.add("translator.limits.body-timeout", () -> "500ms");
         registry.add("translator.limits.concurrent-bodies", () -> "2");
+        registry.add("translator.models.translation-fast.model", () -> "gpt-4.1-mini");
         registry.add("server.tomcat.threads.max", () -> "2");
         registry.add("server.tomcat.threads.min-spare", () -> "2");
         registry.add(
@@ -114,31 +120,20 @@ class TranslatorIntegrationTest {
     void reset() throws Exception {
         jdbc.execute(
                 "TRUNCATE translation_request, quota_account, auth_refresh_token, "
-                        + "auth_refresh_family, auth_user, auth_rate_limit");
+                        + "auth_refresh_family, auth_rate_limit");
+        jdbc.update("DELETE FROM auth_user WHERE username <> 'admin'");
         providerCalls.set(0);
         capturedRequest.set(null);
-        upstreamResponse.set(
-                json.writeValueAsString(
-                        Map.of(
-                                "status",
-                                "completed",
-                                "output",
-                                List.of(
-                                        Map.of(
-                                                "type",
-                                                "message",
-                                                "status",
-                                                "completed",
-                                                "content",
-                                                List.of(
-                                                        Map.of(
-                                                                "type",
-                                                                "output_text",
-                                                                "text",
-                                                                "{\"translatedText\":\"Доброе"
-                                                                        + " утро!\"}")))),
-                                "usage",
-                                Map.of("input_tokens", 100, "output_tokens", 20))));
+        replyWithTranslation(
+                Map.of("translatedText", "Доброе утро!"), Map.of("input_tokens", 100, "output_tokens", 20));
+    }
+
+    private void replyWithTranslation(Map<String, ?> translation, Map<String, Object> usage)
+            throws Exception {
+        var content = Map.of("type", "output_text", "text", json.writeValueAsString(translation));
+        var message = Map.of("type", "message", "status", "completed", "content", List.of(content));
+        upstreamResponse.set(json.writeValueAsString(
+                Map.of("status", "completed", "output", List.of(message), "usage", usage)));
     }
 
     @AfterAll
@@ -152,12 +147,12 @@ class TranslatorIntegrationTest {
                 jdbc.queryForList(
                         "SELECT id, author, filename, dateexecuted, md5sum FROM databasechangelog "
                                 + "ORDER BY orderexecuted");
-        assertThat(history).hasSize(3);
+        assertThat(history).hasSize(4);
         assertThat(history.getFirst().get("id")).isEqualTo("001-translation-metadata");
         assertThat(history.getFirst().get("author")).isEqualTo("translator");
         assertThat(history.getFirst().get("filename"))
                 .isEqualTo("db/changelog/changes/001-translation-metadata.xml");
-        assertThat(history.getLast().get("id")).isEqualTo("003-global-quota");
+        assertThat(history.getLast().get("id")).isEqualTo("004-translation-cost");
         assertThat(jdbc.queryForObject("SELECT to_regclass('flyway_schema_history')", String.class))
                 .isNull();
         jdbc.update("INSERT INTO quota_account(account_id) VALUES (?)", "migration-rerun-account");
@@ -186,6 +181,8 @@ class TranslatorIntegrationTest {
         var body = json.readTree(response.body());
         assertThat(body.path("translatedText").asText()).isEqualTo("Доброе утро!");
         assertThat(body.path("model").asText()).isEqualTo("translation-fast");
+        assertThat(body.has("alternatives")).isFalse();
+        assertThat(body.has("examples")).isFalse();
         var row =
                 jdbc.queryForMap(
                         "SELECT * FROM translation_request WHERE request_id = ?",
@@ -193,8 +190,101 @@ class TranslatorIntegrationTest {
         assertThat(row.get("status")).isEqualTo("SUCCEEDED");
         assertThat(((Number) row.get("charged_tokens")).longValue()).isEqualTo(120);
         assertThat(row.keySet()).doesNotContain("text", "translated_text", "source_text");
-        assertThat(row.get("prompt_version")).isEqualTo("v1");
+        assertThat(row.get("prompt_version")).isEqualTo("v2");
         assertThat(providerCalls.get()).isEqualTo(1);
+    }
+
+    @Test
+    void returnsDistinctTranslationsOfAnAmbiguousSentenceWithoutAnEmptyExamplesField() throws Exception {
+        replyWithTranslation(
+                Map.of("translatedText", "Я пошёл в банк.",
+                        "alternatives", List.of("Я пошёл к берегу."), "examples", List.of()),
+                Map.of("input_tokens", 100, "output_tokens", 20));
+        var response = post(validToken("alice"), """
+                {"text":"I went to the bank.","sourceLanguage":"en","targetLanguage":"ru",
+                 "model":"translation-fast","includeUsage":true}
+                """);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        var body = json.readTree(response.body());
+        assertThat(body.path("translatedText").asText()).isEqualTo("Я пошёл в банк.");
+        assertThat(body.path("alternatives").get(0).asText()).isEqualTo("Я пошёл к берегу.");
+        assertThat(body.has("examples")).isFalse();
+        assertThat(jdbc.queryForObject(
+                "SELECT prompt_version FROM translation_request WHERE request_id = ?",
+                String.class,
+                UUID.fromString(body.path("requestId").asText()))).isEqualTo("v3");
+    }
+
+    @Test
+    void returnsUsageExamplesOfAShortExpressionSeparatelyFromTheTranslation() throws Exception {
+        replyWithTranslation(
+                Map.of("translatedText", "доброе утро", "alternatives", List.of(), "examples", List.of(
+                        Map.of("sourceText", "Good morning, Maya!", "translatedText", "Доброе утро, Майя!"))),
+                Map.of("input_tokens", 100, "output_tokens", 20));
+        var response = post(validToken("alice"), """
+                {"text":"good morning","sourceLanguage":"en","targetLanguage":"ru",
+                 "model":"translation-fast","includeUsage":true}
+                """);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        var body = json.readTree(response.body());
+        assertThat(body.path("translatedText").asText()).isEqualTo("доброе утро");
+        assertThat(body.has("alternatives")).isFalse();
+        assertThat(body.at("/examples/0/sourceText").asText()).isEqualTo("Good morning, Maya!");
+        assertThat(body.at("/examples/0/translatedText").asText()).isEqualTo("Доброе утро, Майя!");
+    }
+
+    @Test
+    void returnsAndStoresTheDetectedLanguageWithACustomTarget() throws Exception {
+        replyWithTranslation(
+                Map.of("translatedText", "Goedemorgen!", "detectedSourceLanguage", "en"),
+                Map.of("input_tokens", 100, "output_tokens", 20));
+        var response = post(validToken("alice"), """
+                {"text":"Good morning!","detectSourceLanguage":true,
+                 "targetLanguage":"Нидерландский","model":"translation-fast"}
+                """);
+        assertThat(response.statusCode()).isEqualTo(200);
+        var body = json.readTree(response.body());
+        assertThat(body.path("sourceLanguage").asText()).isEqualTo("en");
+        assertThat(body.path("targetLanguage").asText()).isEqualTo("Нидерландский");
+        assertThat(body.path("translatedText").asText()).isEqualTo("Goedemorgen!");
+        var row = jdbc.queryForMap(
+                "SELECT source_language, target_language FROM translation_request WHERE request_id = ?",
+                UUID.fromString(body.path("requestId").asText()));
+        assertThat(row).containsEntry("source_language", "en")
+                .containsEntry("target_language", "Нидерландский");
+    }
+
+    @Test
+    void persistsCachedTokenCostAndOnlySummarizesTheCallersRequests() throws Exception {
+        replyWithTranslation(Map.of("translatedText", "Доброе утро!"), Map.of(
+                "input_tokens", 100,
+                "input_tokens_details", Map.of("cached_tokens", 40),
+                "output_tokens", 20));
+        String alice = validToken("alice");
+        var response = post(alice, request().replace("\"en\"", "\"Американский английский\""));
+        assertThat(response.statusCode()).isEqualTo(200);
+        var body = json.readTree(response.body());
+        assertThat(body.path("sourceLanguage").asText()).isEqualTo("Американский английский");
+        var expected = new BigDecimal("0.000060");
+        assertThat(body.path("costUsd").decimalValue()).isEqualByComparingTo(expected);
+        assertThat(jdbc.queryForObject(
+                "SELECT cost_usd FROM translation_request WHERE request_id = ?",
+                BigDecimal.class, UUID.fromString(body.path("requestId").asText())))
+                .isEqualByComparingTo(expected);
+        assertThat(post(validToken("bob"), request()).statusCode()).isEqualTo(200);
+
+        replyWithTranslation(Map.of("translatedText", "Доброе утро!"), Map.of());
+        var unknown = post(alice, request());
+        assertThat(unknown.statusCode()).isEqualTo(200);
+        assertThat(json.readTree(unknown.body()).path("costUsd").isNull()).isTrue();
+
+        var summary = get(alice, "/v1/translation-cost");
+        assertThat(summary.statusCode()).isEqualTo(200);
+        var totals = json.readTree(summary.body());
+        assertThat(totals.path("totalCostUsd").decimalValue()).isEqualByComparingTo(expected);
+        assertThat(totals.path("unpricedRequests").asLong()).isEqualTo(1);
     }
 
     @Test
@@ -252,7 +342,7 @@ class TranslatorIntegrationTest {
         var models = get(validToken("alice"), "/v1/models");
         assertThat(models.statusCode()).isEqualTo(200);
         assertThat(models.body())
-                .contains("translation-fast")
+                .contains("translation-fast", "gpt-4.1-mini")
                 .doesNotContain("translation-quality");
         assertThat(providerCalls.get()).isZero();
     }
@@ -262,7 +352,7 @@ class TranslatorIntegrationTest {
         for (String body :
                 List.of(
                         request().replace("translation-fast", "unknown"),
-                        request().replace("\"en\"", "\"xx\""),
+                        request().replace("\"en\"", "\"??\""),
                         request().replace("Good morning!", " "),
                         request().replace("\"text\":", "\"unexpected\":\"x\",\"text\":"),
                         "{}")) {
@@ -299,16 +389,24 @@ class TranslatorIntegrationTest {
 
     @Test
     void failedProviderCallReleasesSlotButRetainsConservativeCharge() throws Exception {
-        upstreamResponse.set("{\"status\":\"incomplete\",\"output\":[]}");
-        var response = post(validToken("alice"), request());
+        upstreamResponse.set("""
+                {"status":"incomplete","output":[],"usage":{"input_tokens":100,"output_tokens":20}}
+                """);
+        String alice = validToken("alice");
+        var response = post(alice, request());
         assertThat(response.statusCode()).isEqualTo(502);
         assertThat(response.body()).contains("INCOMPLETE_TRANSLATION");
         var row =
                 jdbc.queryForMap(
-                        "SELECT status, charged_tokens, error_code FROM translation_request");
+                        "SELECT status, charged_tokens, error_code, cost_usd FROM translation_request");
         assertThat(row.get("status")).isEqualTo("FAILED");
         assertThat(((Number) row.get("charged_tokens")).longValue()).isGreaterThan(4096);
         assertThat(row.get("error_code")).isEqualTo("INCOMPLETE_TRANSLATION");
+        var expected = new BigDecimal("0.000072");
+        assertThat((BigDecimal) row.get("cost_usd")).isEqualByComparingTo(expected);
+        var summary = json.readTree(get(alice, "/v1/translation-cost").body());
+        assertThat(summary.path("totalCostUsd").decimalValue()).isEqualByComparingTo(expected);
+        assertThat(summary.path("unpricedRequests").asLong()).isZero();
     }
 
     @Test
@@ -358,7 +456,7 @@ class TranslatorIntegrationTest {
                         "SELECT created_at FROM translation_request WHERE request_id = ?",
                         OffsetDateTime.class,
                         id);
-        quota.success(id, new TranslationProvider.ProviderResult("x", 100L, 20L));
+        quota.success(id, new TranslationProvider.ProviderResult("x", 100L, 20L), null);
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT created_at FROM translation_request WHERE request_id = ?",
@@ -387,16 +485,55 @@ class TranslatorIntegrationTest {
     @Test
     void registersAndLogsInWithSelfIssuedJwtAndHashedCredentials() throws Exception {
         assertThat(properties.security().issuer()).isEqualTo("translator");
-        var registered = auth("register", credentials("Alice", "correct horse battery"));
+        var registered = register(credentials("Alice", userPassword));
         assertThat(registered.statusCode()).isEqualTo(201);
         assertThat(registered.headers().firstValue("Cache-Control").orElseThrow())
                 .contains("no-store");
-        var tokens = json.readTree(registered.body());
+        assertThat(registered.body()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM auth_refresh_family", Integer.class))
+                .isZero();
+        var tokens = login("alice", userPassword);
         var claims = SignedJWT.parse(tokens.path("accessToken").asText()).getJWTClaimsSet();
-        var user = jdbc.queryForMap("SELECT * FROM auth_user");
+        var user = jdbc.queryForMap("SELECT * FROM auth_user WHERE username = 'alice'");
         assertRegisteredIdentity(tokens, claims, user);
         assertIssuedTokenPermissions(tokens, claims);
         assertLoginAndCredentialFailures(claims);
+    }
+
+    @Test
+    void onlyBootstrappedAdminCanCreateUsersEvenAfterRefreshing() throws Exception {
+        String alice = credentials("Alice", userPassword);
+        assertThat(auth("register", alice).statusCode()).isEqualTo(401);
+        assertThat(auth("login", credentials("admin", userPassword)).statusCode()).isEqualTo(401);
+
+        var admin = login("ADMIN", adminPassword);
+        String adminAccessToken = admin.path("accessToken").asText();
+        assertThat(auth("register", alice, adminAccessToken).statusCode()).isEqualTo(201);
+        assertThat(auth("register", credentials("AdMiN", userPassword), adminAccessToken).statusCode())
+                .isEqualTo(409);
+
+        String bob = credentials("bob", userPassword);
+        var ordinary = login("alice", userPassword);
+        assertThat(auth("register", bob, ordinary.path("accessToken").asText()).statusCode())
+                .isEqualTo(403);
+        var ordinaryRefreshed = refresh(ordinary);
+        assertThat(auth("register", bob, ordinaryRefreshed.path("accessToken").asText()).statusCode())
+                .isEqualTo(403);
+
+        var adminRefreshed = refresh(admin);
+        assertThat(auth("register", bob, adminRefreshed.path("accessToken").asText()).statusCode())
+                .isEqualTo(201);
+        assertThat(login("bob", userPassword).path("accessToken").asText()).isNotBlank();
+    }
+
+    @Test
+    void accountInsertHandlesConflictsOnEitherUniqueIdentity() {
+        UUID adminId =
+                jdbc.queryForObject("SELECT user_id FROM auth_user WHERE username = 'admin'", UUID.class);
+        assertThat(authRepository.createUser(adminId, "another_name", "unused-hash")).isFalse();
+        assertThat(authRepository.createUser(UUID.randomUUID(), "admin", "unused-hash")).isFalse();
+        assertThat(jdbc.queryForList("SELECT username FROM auth_user", String.class))
+                .containsExactly("admin");
     }
 
     @Test
@@ -410,9 +547,9 @@ class TranslatorIntegrationTest {
                         credentials("alice", "界".repeat(25)),
                         "{\"username\":\"alice\",\"password\":\"correct horse battery\","
                                 + "\"scope\":\"translate:premium\"}")) {
-            assertThat(auth("register", invalid).statusCode()).isEqualTo(400);
+            assertThat(register(invalid).statusCode()).isEqualTo(400);
         }
-        assertThat(auth("register", credentials("alice", "x".repeat(70000))).statusCode())
+        assertThat(register(credentials("alice", "x".repeat(70000))).statusCode())
                 .isEqualTo(413);
         for (String route : List.of("refresh", "logout")) {
             for (String body :
@@ -424,15 +561,14 @@ class TranslatorIntegrationTest {
                 assertThat(auth(route, body).statusCode()).isEqualTo(400);
             }
         }
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM auth_user", Integer.class)).isZero();
+        assertThat(jdbc.queryForList("SELECT username FROM auth_user", String.class))
+                .containsExactly("admin");
         assertThat(providerCalls.get()).isZero();
     }
 
     @Test
     void rotatesRefreshTokensAndReplayRevokesOnlyTheAffectedFamily() throws Exception {
-        var first =
-                json.readTree(
-                        auth("register", credentials("alice", "correct horse battery")).body());
+        var first = createUserAndLogin("alice");
         var independent =
                 json.readTree(auth("login", credentials("alice", "correct horse battery")).body());
         var expires =
@@ -464,9 +600,7 @@ class TranslatorIntegrationTest {
 
     @Test
     void concurrentRefreshHasOneWinnerAndReplayRevokesTheWinner() throws Exception {
-        var initial =
-                json.readTree(
-                        auth("register", credentials("alice", "correct horse battery")).body());
+        var initial = createUserAndLogin("alice");
         String body = refreshBody(initial.path("refreshToken").asText());
         var start = new CountDownLatch(1);
         try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
@@ -508,9 +642,7 @@ class TranslatorIntegrationTest {
 
     @Test
     void logoutRevokesWholeFamilyAndExpiredOrUnknownRefreshTokensFail() throws Exception {
-        var initial =
-                json.readTree(
-                        auth("register", credentials("alice", "correct horse battery")).body());
+        var initial = createUserAndLogin("alice");
         var rotated =
                 json.readTree(
                         auth("refresh", refreshBody(initial.path("refreshToken").asText())).body());
@@ -557,9 +689,7 @@ class TranslatorIntegrationTest {
 
     @Test
     void refreshWorksAfterAccessExpiryAndRacingLogoutLeavesNoLiveRefreshSession() throws Exception {
-        var initial =
-                json.readTree(
-                        auth("register", credentials("alice", "correct horse battery")).body());
+        var initial = createUserAndLogin("alice");
         String subject =
                 SignedJWT.parse(initial.path("accessToken").asText())
                         .getJWTClaimsSet()
@@ -622,14 +752,13 @@ class TranslatorIntegrationTest {
 
     @Test
     void anonymousFailuresDoNotBlockAnotherAccountLoginRefreshOrLogout() throws Exception {
-        var initial =
-                json.readTree(
-                        auth("register", credentials("alice", "correct horse battery")).body());
+        var initial = createUserAndLogin("alice");
         assertThat(auth("login", credentials("unknown", "incorrect password")).statusCode())
                 .isEqualTo(401);
         jdbc.update(
-                "UPDATE auth_rate_limit SET attempts = ?",
-                properties.security().authRequestsPerMinute());
+                "UPDATE auth_rate_limit SET attempts = ? WHERE client_hash = ?",
+                properties.security().authRequestsPerMinute(),
+                sha256("missing-login:127.0.0.1"));
         assertThat(auth("login", credentials("other_unknown", "incorrect password")).statusCode())
                 .isEqualTo(429);
         assertThat(auth("login", credentials("ALICE", "correct horse battery")).statusCode())
@@ -665,9 +794,7 @@ class TranslatorIntegrationTest {
 
     @Test
     void replayStillRevokesTheFamilyWhenSessionAdmissionIsExhausted() throws Exception {
-        var initial =
-                json.readTree(
-                        auth("register", credentials("alice", "correct horse battery")).body());
+        var initial = createUserAndLogin("alice");
         var next =
                 json.readTree(
                         auth("refresh", refreshBody(initial.path("refreshToken").asText())).body());
@@ -688,12 +815,8 @@ class TranslatorIntegrationTest {
 
     @Test
     void globalBudgetCannotBeResetByRegisteringAnotherAccount() throws Exception {
-        var first =
-                json.readTree(
-                        auth("register", credentials("first", "correct horse battery")).body());
-        var second =
-                json.readTree(
-                        auth("register", credentials("second", "correct horse battery")).body());
+        var first = createUserAndLogin("first");
+        var second = createUserAndLogin("second");
         assertThat(post(first.path("accessToken").asText(), request()).statusCode()).isEqualTo(200);
         jdbc.update(
                 "UPDATE translation_request SET charged_tokens = ?",
@@ -937,7 +1060,7 @@ class TranslatorIntegrationTest {
                                 .getJWTClaimsSet()
                                 .getSubject())
                 .isEqualTo(claims.getSubject());
-        assertThat(auth("register", credentials("alice", "other correct password")).statusCode())
+        assertThat(register(credentials("alice", "other correct password")).statusCode())
                 .isEqualTo(409);
         var badPassword = auth("login", credentials("alice", "wrong password value"));
         var missingUser = auth("login", credentials("unknown", "wrong password value"));
@@ -949,14 +1072,48 @@ class TranslatorIntegrationTest {
     }
 
     private HttpResponse<String> auth(String action, String body) throws Exception {
-        return http.send(
-                HttpRequest.newBuilder(
-                                URI.create("http://127.0.0.1:" + port + "/v1/auth/" + action))
+        return auth(action, body, null);
+    }
+
+    private HttpResponse<String> auth(String action, String body, String accessToken) throws Exception {
+        var builder =
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/v1/auth/" + action))
                         .timeout(Duration.ofSeconds(15))
-                        .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(body))
-                        .build(),
+                        .header("Content-Type", "application/json");
+        if (accessToken != null) {
+            builder.header("Authorization", "Bearer " + accessToken);
+        }
+        return http.send(
+                builder.POST(HttpRequest.BodyPublishers.ofString(body)).build(),
                 HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> register(String body) throws Exception {
+        String adminToken =
+                token(
+                        "test-admin",
+                        "translator-api",
+                        Instant.now().plusSeconds(300),
+                        "users:create",
+                        key);
+        return auth("register", body, adminToken);
+    }
+
+    private JsonNode createUserAndLogin(String username) throws Exception {
+        assertThat(register(credentials(username, userPassword)).statusCode()).isEqualTo(201);
+        return login(username, userPassword);
+    }
+
+    private JsonNode login(String username, String password) throws Exception {
+        var response = auth("login", credentials(username, password));
+        assertThat(response.statusCode()).isEqualTo(200);
+        return json.readTree(response.body());
+    }
+
+    private JsonNode refresh(JsonNode session) throws Exception {
+        var response = auth("refresh", refreshBody(session.path("refreshToken").asText()));
+        assertThat(response.statusCode()).isEqualTo(200);
+        return json.readTree(response.body());
     }
 
     private String credentials(String username, String password) throws Exception {

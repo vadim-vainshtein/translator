@@ -24,7 +24,6 @@ public record TranslatorProperties(
         @Valid @NotNull Security security,
         @Valid @NotNull Openai openai,
         @Valid @NotNull Limits limits,
-        @NotEmpty Set<@Pattern(regexp = "[a-z]{2,3}(-[A-Za-z0-9]{2,8})*") String> languages,
         @NotEmpty Map<@Pattern(regexp = "[a-z0-9-]{1,100}") String, @Valid Model> models) {
     @AssertTrue(message = "lease must exceed the provider timeout by at least 10 seconds")
     public boolean isLeaseLongEnough() {
@@ -41,8 +40,7 @@ public record TranslatorProperties(
             @NotBlank String privateKeyLocation,
             @NotNull Duration accessTokenTtl,
             @NotNull Duration refreshTokenTtl,
-            @Min(1) @Max(10000) int authRequestsPerMinute,
-            boolean registrationEnabled) {
+            @Min(1) @Max(10000) int authRequestsPerMinute) {
         @AssertTrue(
                 message =
                         "access TTL must be 1 minute to 1 hour; refresh TTL must be 1 hour to 90"

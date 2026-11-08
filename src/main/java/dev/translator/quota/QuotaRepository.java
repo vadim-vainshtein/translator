@@ -4,10 +4,12 @@ import dev.translator.config.TranslatorProperties;
 import dev.translator.translation.TranslationCommand;
 import dev.translator.translation.TranslationPrompt;
 import dev.translator.translation.TranslationProvider.ProviderResult;
+import dev.translator.translation.TranslationProvider.ProviderUsage;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.UUID;
@@ -81,6 +83,19 @@ public class QuotaRepository {
         return new Usage(0, count(counts, "running"), count(counts, "tokens"));
     }
 
+    public CostSummary costSummary(String account) {
+        return jdbc.queryForObject(
+                """
+                SELECT coalesce(sum(cost_usd), 0) AS total_cost_usd,
+                       count(*) FILTER (WHERE cost_usd IS NULL) AS unpriced_requests
+                FROM translation_request
+                WHERE account_id = ? AND status <> 'RUNNING'
+                """,
+                (row, rowNumber) -> new CostSummary(
+                        row.getBigDecimal("total_cost_usd"), row.getLong("unpriced_requests")),
+                account);
+    }
+
     public void reserve(
             UUID requestId,
             String account,
@@ -103,7 +118,7 @@ public class QuotaRepository {
                 alias,
                 model.provider(),
                 model.model(),
-                TranslationPrompt.VERSION,
+                TranslationPrompt.version(command),
                 command.sourceLanguage(),
                 command.targetLanguage(),
                 now,
@@ -111,38 +126,57 @@ public class QuotaRepository {
                 reserved);
     }
 
-    public void success(UUID requestId, ProviderResult result) {
+    public void success(UUID requestId, ProviderResult result, BigDecimal costUsd) {
         // Admission time anchors charging to its original day, even across midnight.
-        jdbc.update(
-                """
-                UPDATE translation_request SET status = 'SUCCEEDED', completed_at = clock_timestamp(),
-                    input_tokens = ?, output_tokens = ?,
-                    charged_tokens = coalesce(CAST(? AS bigint), charged_tokens)
-                WHERE request_id = ? AND status = 'RUNNING'
-                """,
-                result.inputTokens(),
-                result.outputTokens(),
-                chargedTokens(result),
-                requestId);
-    }
-
-    public void failure(UUID requestId, String code) {
-        // Errors/timeouts may incur upstream cost: retain the reservation.
+        // Record late provider usage without reopening an expired quota lease.
+        ProviderUsage usage = result.usage();
         jdbc.update(
                 """
                 UPDATE translation_request
-                SET status = 'FAILED', completed_at = clock_timestamp(), error_code = ?
-                WHERE request_id = ? AND status = 'RUNNING'
+                SET status = CASE WHEN status = 'RUNNING' THEN 'SUCCEEDED' ELSE status END,
+                    completed_at = CASE WHEN status = 'RUNNING' THEN clock_timestamp() ELSE completed_at END,
+                    charged_tokens = CASE WHEN status = 'RUNNING'
+                        THEN coalesce(CAST(? AS bigint), charged_tokens) ELSE charged_tokens END,
+                    input_tokens = ?, output_tokens = ?, cached_input_tokens = ?, cost_usd = ?,
+                    source_language = coalesce(?, source_language)
+                WHERE request_id = ? AND status IN ('RUNNING', 'EXPIRED')
                 """,
-                code,
+                chargedTokens(usage),
+                usage.inputTokens(),
+                usage.outputTokens(),
+                usage.cachedInputTokens(),
+                costUsd,
+                result.detectedSourceLanguage(),
                 requestId);
     }
 
-    private Long chargedTokens(ProviderResult result) {
-        if (result.inputTokens() == null || result.outputTokens() == null) {
+    public void failure(UUID requestId, String code, ProviderUsage usage, BigDecimal costUsd) {
+        // Keep the reserved quota charge and record any billed provider usage.
+        jdbc.update(
+                """
+                UPDATE translation_request
+                SET status = CASE WHEN status = 'RUNNING' THEN 'FAILED' ELSE status END,
+                    completed_at = CASE WHEN status = 'RUNNING' THEN clock_timestamp() ELSE completed_at END,
+                    error_code = CASE WHEN status = 'RUNNING' THEN ? ELSE error_code END,
+                    input_tokens = coalesce(input_tokens, ?),
+                    output_tokens = coalesce(output_tokens, ?),
+                    cached_input_tokens = coalesce(cached_input_tokens, ?),
+                    cost_usd = coalesce(cost_usd, ?)
+                WHERE request_id = ? AND status IN ('RUNNING', 'EXPIRED')
+                """,
+                code,
+                usage.inputTokens(),
+                usage.outputTokens(),
+                usage.cachedInputTokens(),
+                costUsd,
+                requestId);
+    }
+
+    private Long chargedTokens(ProviderUsage usage) {
+        if (usage.inputTokens() == null || usage.outputTokens() == null) {
             return null;
         }
-        return result.inputTokens() + result.outputTokens();
+        return usage.inputTokens() + usage.outputTokens();
     }
 
     private long count(Map<String, Object> counts, String key) {

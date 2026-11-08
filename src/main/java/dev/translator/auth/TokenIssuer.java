@@ -54,6 +54,7 @@ public class TokenIssuer {
     }
 
     private String accessToken(UUID user, Instant issued, Instant expires) {
+        String scope = AdminAccount.ID.equals(user) ? "translate:write users:create" : "translate:write";
         var claims =
                 JwtClaimsSet.builder()
                         .issuer(security.issuer())
@@ -62,7 +63,7 @@ public class TokenIssuer {
                         .issuedAt(issued)
                         .expiresAt(expires)
                         .id(UUID.randomUUID().toString())
-                        .claim("scope", "translate:write")
+                        .claim("scope", scope)
                         .build();
         var header = JwsHeader.with(SignatureAlgorithm.RS256).type("JWT").build();
         return encoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();

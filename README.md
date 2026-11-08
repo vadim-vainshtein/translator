@@ -4,10 +4,78 @@ Java 21 / Spring Boot 4.1.2 REST API with PostgreSQL, Liquibase migrations, JWT
 authentication, configurable model aliases, an OpenAI Responses adapter, and
 database-backed usage limits. No source text or translated text is stored in the
 database. Local accounts and refresh-token hashes are persisted separately.
-Translation history, billing, streaming, automatic language
-detection, and automatic provider fallback are outside this MVP.
+The service supports source-language detection and records estimated provider
+costs for requests with known pricing and usage.
 
-## Run locally
+## Run with Docker
+
+Requirements: Docker with Linux containers and Docker Compose v2.23.1 or newer
+(including environment-backed secrets and `up --wait`). No host JDK or Maven is
+needed: the multi-stage Dockerfile builds with JDK 21 and runs with a JRE as a
+non-root user.
+
+One-time setup:
+
+1. Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell,
+   or `cp .env.example .env` on macOS/Linux).
+2. Set `DB_PASSWORD`, `ADMIN_PASSWORD`, and `OPENAI_API_KEY` in `.env`.
+3. Generate a persistent PKCS#8 RSA signing key. For example, this Docker command
+   prints a new key without installing OpenSSL locally:
+
+   ```sh
+   docker run --rm --entrypoint openssl eclipse-temurin:21-jre-jammy genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072
+   ```
+
+   Paste the entire PEM, including `BEGIN PRIVATE KEY` and `END PRIVATE KEY`, into
+   the single-quoted multiline `JWT_PRIVATE_KEY` value in `.env`. Keep the same key
+   across restarts and updates; changing it invalidates existing access tokens.
+   An existing unencrypted PKCS#8 RSA key of at least 2048 bits also works.
+
+Start or update the application and PostgreSQL with one command from the repository
+root:
+
+```sh
+docker compose up -d --build --wait
+```
+
+The API is available at `http://localhost:8080`. Compose waits for PostgreSQL,
+then application startup and its HTTP health check. The check expects the normal
+`401` from `/v1/models` without credentials and does not call OpenAI. Liquibase
+applies migrations automatically, then the service creates the `admin` account
+using `ADMIN_PASSWORD` if it has not already been provisioned.
+
+Compose passes the database password, administrator password, and provider key at runtime;
+the signing key is mounted read-only at `/run/secrets/jwt-private-key` using a
+[Compose environment-backed secret](https://docs.docker.com/reference/compose-file/secrets/).
+The build context contains only the wrapper, POM, and application sources, keeping
+`.env`, signing keys, Git data, and local caches out of image layers. `.env` is
+ignored by Git; restrict access to it and back it up securely. Keep secrets in
+single quotes so Compose preserves literal `$` and `#` characters. Shell variables
+override `.env` values. Avoid sharing `docker compose config` output because it
+can contain secrets. This setup targets Docker Compose, not `docker stack deploy`.
+
+Both ports bind to loopback by default. `APP_PORT` and `POSTGRES_PORT` change host
+ports; `APP_BIND_ADDRESS` controls the API bind address. The app always connects
+to the Compose PostgreSQL service internally. Put a trusted HTTPS reverse proxy
+in front of the API for remote access.
+
+Useful commands:
+
+```sh
+docker compose ps
+docker compose logs -f app
+docker compose down
+```
+
+`down` retains the `postgres-data` named volume. Keep the same Compose project name
+and `.env` to reuse accounts, refresh tokens, usage data, and signing key after an
+update. Do not add `--volumes` to `down` unless you intend to delete the database.
+Changing `DB_PASSWORD` in `.env` does not change an already initialized PostgreSQL
+role's password; update that role separately before switching the configured
+password. The container build skips tests; run the validation suite below before
+deploying changes.
+
+## Run locally with Maven
 
 Requirements: JDK 21+, Docker with Linux containers, and an RSA private key for
 self-issued RS256 access tokens. Maven Wrapper downloads Maven 3.9.16 on first use.
@@ -31,11 +99,12 @@ in PowerShell:
 
 ```powershell
 $env:DB_PASSWORD = 'choose-a-local-development-password'
+$env:ADMIN_PASSWORD = 'choose-a-unique-administrator-password'
 $env:JWT_ISSUER = 'translator'
 $env:JWT_PRIVATE_KEY_LOCATION = 'file:./secrets/jwt-private.pem'
 $env:JWT_AUDIENCE = 'translator-api'
 $env:OPENAI_API_KEY = 'your-server-side-api-key'
-docker compose up -d --wait
+docker compose up -d --wait postgres
 .\mvnw.cmd spring-boot:run
 ```
 
@@ -43,24 +112,34 @@ On macOS/Linux use `export NAME=value` and `./mvnw spring-boot:run`. Alternative
 `./mvnw package` produces `target/translator-0.0.1-SNAPSHOT.jar` which runs with
 `java -jar target/translator-0.0.1-SNAPSHOT.jar`.
 
-Compose binds PostgreSQL to loopback only and uses a named volume. `.env.example`
-lists settings; copying it to `.env` supplies Compose settings only. Spring Boot
-does **not** automatically load `.env` into the Java process. Keep actual secrets
-out of source control. No live model API call is made at startup.
+Compose binds PostgreSQL to loopback only and uses a named volume. You may use the
+same `.env` prepared above for Compose, but a Java process started outside Docker
+does **not** automatically load `.env`. Set its environment variables in the shell,
+including `ADMIN_PASSWORD` and `JWT_PRIVATE_KEY_LOCATION` pointing to the local
+PEM file. The local database defaults to `localhost:5432`; override `DB_URL` if you changed
+`POSTGRES_PORT`. Use the same `DB_PASSWORD` as the database. No live model API call
+is made at startup.
 
 ## Authentication
 
 The service owns accounts and issues RS256 JWTs; no external identity provider or
 JWKS endpoint is required. External-provider tokens are no longer accepted.
-Register once, or log in with an existing account:
 
-Public registration is disabled by default (`403 REGISTRATION_DISABLED`). An
-operator must explicitly set `REGISTRATION_ENABLED=true` to enable account
-creation, for example during controlled onboarding. Keep it disabled when public
-signup is unnecessary. The signup example below requires that explicit opt-in.
+Sign in as `admin` with the `ADMIN_PASSWORD` configured on first startup. The
+password must be nonblank, contain 12–72 characters, and fit in 72 UTF-8 bytes.
+The service keeps the stored password on subsequent starts. An existing account
+named `admin` from an earlier version causes startup to fail if it was created
+through public registration. Rename that account in the database before upgrading.
+
+The administrator can create users from the browser or by sending an access token
+with the `users:create` scope to `POST /v1/auth/register`. The service returns
+`201 Created` with an empty body. The new user signs in with their own credentials.
+Requests without a valid access token receive `401`, and signed-in users without
+`users:create` receive `403`.
 
 ```sh
 curl http://localhost:8080/v1/auth/register \
+  -H 'Authorization: Bearer ADMIN_ACCESS_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{"username":"alice","password":"a-long-unique-password"}'
 
@@ -69,15 +148,16 @@ curl http://localhost:8080/v1/auth/login \
   -d '{"username":"alice","password":"a-long-unique-password"}'
 ```
 
-Registration returns HTTP 201, login returns 200, and both return
+Login returns HTTP 200 and
 `{accessToken, tokenType, expiresIn, refreshToken, refreshExpiresIn}`. Durations are
 in seconds and `tokenType` is `Bearer`. Usernames contain 3–64 ASCII letters,
 digits, or underscores, are case insensitive, and are stored lowercase. Passwords
 are 12–72 characters and at most 72 UTF-8 bytes; they are hashed using BCrypt
 with cost 12. Invalid login credentials return the same generic 401 response for
 an unknown account and an incorrect password. Duplicate usernames return 409.
-Clients cannot request scopes; issued tokens receive `translate:write`. Additional
-model-specific scopes still deny access unless a trusted token grants them.
+Issued tokens receive `translate:write`. Login and refresh for `admin` also grant
+`users:create`. Clients cannot request scopes. Additional model-specific scopes
+still deny access unless a trusted token grants them.
 
 Access tokens expire after 15 minutes by default (`JWT_ACCESS_TOKEN_TTL`, allowed
 1 minute–1 hour). Verification uses the local public key and requires RS256,
@@ -121,16 +201,16 @@ Authentication uses separate PostgreSQL-backed buckets, each allowing 30
 attempts/minute (`AUTH_REQUESTS_PER_MINUTE`). Existing-account login attempts are
 keyed by the account's stable UUID, independent of the client address and username
 case. Unknown usernames share a separate bucket per direct client address, so
-arbitrary names do not create arbitrary database buckets. Signup has its own
-address bucket. Successful refresh admission is keyed by the verified session
+arbitrary names do not create arbitrary database buckets. Successful refresh
+admission is keyed by the verified session
 family, while invalid refresh probes use a separate address bucket. Replay
 revocation is checked before session throttling. Logout remains available for
 revocation even when other authentication buckets are exhausted.
 
 Excess requests return `429 AUTH_RATE_LIMIT`. Unrelated failed logins or invalid
 refreshes cannot consume another account's login/session allowance, including
-behind a proxy or NAT. Forwarded headers are not trusted. Signup and unknown-name
-failures still group by a proxy's address; configure trusted per-client ingress
+behind a proxy or NAT. Forwarded headers are not trusted. Unknown-name failures
+still group by a proxy's address; configure trusted per-client ingress
 throttling as an additional deployment defense. Attempts against the same known
 account share its login allowance across addresses; refresh/logout allow an
 existing client to retain or terminate its session during a login attack.
@@ -156,6 +236,9 @@ curl http://localhost:8080/v1/translations \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"text":"Good morning!","sourceLanguage":"en","targetLanguage":"ru","model":"translation-fast"}'
+
+curl http://localhost:8080/v1/translation-cost \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
 ```json
@@ -164,15 +247,23 @@ curl http://localhost:8080/v1/translations \
   "translatedText": "Доброе утро!",
   "sourceLanguage": "en",
   "targetLanguage": "ru",
-  "model": "translation-fast"
+  "model": "translation-fast",
+  "costUsd": 0.000072
 }
 ```
 
-Each translation is independent. Both source and target languages are explicit.
-Supported tags by default: `en`, `ru`, `kk`, `de`, `fr`, `es`, `it`, `pt`, `zh`,
-`ja`, `ko`, `ar`, `hi`, `uk`, `tr`. Matching is exact. Configure the list in
-`translator.languages` for other language pairs. The service does not verify that
-the source language selected by the caller matches the text.
+Each translation is independent. Use a language code or a name such as
+`Нидерландский` for either language. To detect the source language, pass
+`"detectSourceLanguage": true` and omit `sourceLanguage` from the request. The
+response's `sourceLanguage` then contains the model's detected code or name.
+The value `und` means the model could not identify the language.
+
+Pass `"includeUsage": true` to request distinct translation alternatives for
+ambiguous words, short expressions, and short standalone sentences. Words and
+short expressions also get usage examples with `sourceText` and `translatedText`.
+Nonempty `alternatives` and `examples` arrays are returned separately from the main
+`translatedText`. Longer text returns only the main translation. The option
+defaults to `false`.
 
 Model aliases are `translation-fast` and `translation-quality`, mapped to
 `gpt-4.1-mini` and `gpt-4.1` by default. Set `OPENAI_FAST_MODEL` and
@@ -181,10 +272,20 @@ Responses and strict JSON-schema output. These defaults are baselines, not a
 claim that they are optimal for every language pair. Evaluate quality and latency
 with representative texts before release.
 
-The models endpoint returns an array of `{id, provider, maxInputBytes}` records.
+The models endpoint returns an array of `{id, name, provider, maxInputBytes}` records.
 Models can have a `required-scope` in application configuration; those models are
-hidden from and denied to users without that extra scope. Clients cannot supply
-raw provider model IDs, prompts, API keys, generation settings, or upstream URLs.
+hidden from and denied to users without that extra scope. Use `name` for display
+and send `id` as `model` in translation requests.
+
+The service stores `costUsd` using the response's input, cached input, and output
+token counts and the configured USD rates per million tokens. Configure rates
+under `translator.pricing.models`, keyed by exact provider model name. Rates for
+the default models are included in `application.yaml`. `costUsd` is `null` if
+rates or token counts are unavailable. `/v1/translation-cost` returns the caller's
+sum of retained known costs, including failed translations with reported usage,
+and a count of terminal requests with unknown costs. That count includes older
+requests without a cost record. Costs are estimates based on configured rates and
+provider-reported usage.
 
 Default limits: 10,000 characters and 20,000 UTF-8 bytes of text, 65,536 bytes for
 the entire JSON body, 4,096 maximum output tokens, 20 admitted requests/minute,
@@ -216,8 +317,8 @@ Errors use `{ "code": "...", "message": "..." }`, except framework-generated
 | 400 | `INVALID_REQUEST`, `UNKNOWN_MODEL`, `UNSUPPORTED_LANGUAGE` |
 | 401 | Missing, expired, or invalid JWT |
 | 403 | Missing scope; `MODEL_FORBIDDEN` for model-specific denial |
-| 403 | `REGISTRATION_DISABLED` when public signup is disabled |
 | 408 | `REQUEST_TIMEOUT` for an incomplete/slow request body |
+| 409 | `USERNAME_UNAVAILABLE` when a username is taken or reserved |
 | 413 | `REQUEST_TOO_LARGE`, `TEXT_TOO_LARGE` |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` |
 | 422 | `TRANSLATION_REFUSED` |
@@ -241,8 +342,8 @@ Refusals, incomplete generations, malformed output, duplicate JSON properties,
 and extra output fields are rejected. API responses do not expose upstream error
 bodies, credentials, or provider exceptions.
 
-Prompt `v1` directs the model to translate embedded questions and commands instead
-of following them. **A prompt and a JSON schema cannot guarantee translation-only
+Prompts `v2` (default) and `v3` (with usage) direct the model to translate embedded
+questions and commands instead of following them. **A prompt and a JSON schema cannot guarantee translation-only
 behavior or correct meaning.** The tests establish request isolation and response
 handling, not semantic robustness of a real model. Run language-pair and adversarial
 evaluations against each selected model before release. Do not put secrets in
@@ -275,7 +376,7 @@ provider deadline by at least 10 seconds. Defaults are a 30-second deadline and
 a 60-second lease. Minute rate limits count admitted calls, including failures.
 
 Only translation metadata is persisted for translation calls: timestamps, hashed account identifier, model and prompt
-versions, languages, state, usage, and error code. Logs contain request IDs,
+versions, languages, state, usage, estimated cost, and error code. Logs contain request IDs,
 model aliases, timing, usage, and outcomes. Metadata retention/archival is an
 operational follow-up; the MVP retains it until an operator applies a retention
 policy. Keep any cleanup policy long enough to preserve active daily/minute limits.
@@ -328,7 +429,7 @@ admission across accounts, global daily budgets, lease expiry, rate limits, and
 metadata persistence. Security regressions also use a two-worker HTTP server to
 exercise incomplete/trickled uploads, bounded body admission, disconnect cleanup,
 chunked/declared oversized bodies, and successful HTTP connection reuse. They
-cover default-disabled signup, login/session throttle isolation behind one client
+cover administrator-only account creation, login/session throttle isolation behind one client
 address, and refresh replay revocation even when session admission is exhausted.
 
 If your shell inherits `MAVEN_ARGS` that redirects dependency downloads to an

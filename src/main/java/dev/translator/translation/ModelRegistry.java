@@ -66,6 +66,7 @@ public class ModelRegistry {
                                 new ModelView(
                                         entry.getKey(),
                                         entry.getValue().provider(),
+                                        entry.getValue().model(),
                                         entry.getValue().maxInputBytes()))
                 .toList();
     }
@@ -80,5 +81,5 @@ public class ModelRegistry {
                 .anyMatch(authority -> requiredAuthority.equals(authority.getAuthority()));
     }
 
-    public record ModelView(String id, String provider, int maxInputBytes) {}
+    public record ModelView(String id, String provider, String name, int maxInputBytes) {}
 }

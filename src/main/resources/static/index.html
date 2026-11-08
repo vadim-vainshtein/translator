@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Перевод текста с выбором языка и AI-модели.">
+    <title>Переводчик</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/app.css">
+    <script src="/app.js" defer></script>
+</head>
+<body>
+    <div class="page-shell">
+        <main aria-label="Переводчик">
+            <section id="auth-panel" class="auth-panel" aria-labelledby="auth-title">
+                <div class="auth-heading">
+                    <h2 id="auth-title">Войдите, чтобы переводить</h2>
+                    <p>Используйте свой аккаунт переводчика.</p>
+                </div>
+                <form id="auth-form" class="auth-form" method="post">
+                    <div class="field">
+                        <label for="username">Имя пользователя</label>
+                        <input id="username" name="username" autocomplete="username" required
+                               pattern="[A-Za-z0-9_]{3,64}" minlength="3" maxlength="64"
+                               placeholder="Например, alex" aria-describedby="credentials-hint">
+                    </div>
+                    <div class="field">
+                        <label for="password">Пароль</label>
+                        <input id="password" name="password" type="password" autocomplete="current-password"
+                               required minlength="12" maxlength="72" placeholder="Не менее 12 символов"
+                               aria-describedby="credentials-hint">
+                    </div>
+                    <button id="auth-submit" class="button button-primary" type="submit">Войти <span aria-hidden="true">↗</span></button>
+                </form>
+                <div class="auth-footer">
+                    <span id="credentials-hint">Имя: 3–64 латинских символа, цифры или _. Пароль: от 12 символов, до 72 байт.</span>
+                </div>
+            </section>
+            <p id="auth-message" class="message" role="alert" hidden></p>
+
+            <section id="create-user-panel" class="auth-panel" aria-labelledby="create-user-title" hidden>
+                <div class="auth-heading">
+                    <h2 id="create-user-title">Создать пользователя</h2>
+                    <p>Новый пользователь сможет войти со своим именем и паролем.</p>
+                </div>
+                <form id="create-user-form" class="auth-form" method="post">
+                    <div class="field">
+                        <label for="new-username">Имя пользователя</label>
+                        <input id="new-username" autocomplete="off" required
+                               pattern="[A-Za-z0-9_]{3,64}" minlength="3" maxlength="64"
+                               aria-describedby="new-credentials-hint">
+                    </div>
+                    <div class="field">
+                        <label for="new-password">Пароль</label>
+                        <input id="new-password" type="password" autocomplete="new-password"
+                               required minlength="12" maxlength="72" aria-describedby="new-credentials-hint">
+                    </div>
+                    <button id="create-user-submit" class="button button-primary" type="submit">Создать</button>
+                </form>
+                <div class="auth-footer">
+                    <span id="new-credentials-hint">Имя: 3–64 латинских символа, цифры или _. Пароль: от 12 символов, до 72 байт.</span>
+                </div>
+                <p id="create-user-message" class="message" role="status" hidden></p>
+            </section>
+
+            <section class="workspace" aria-label="Перевод текста">
+                <div class="workspace-toolbar">
+                    <div class="model-field">
+                        <span class="model-icon" aria-hidden="true">✦</span>
+                        <label for="model">Модель</label>
+                        <select id="model" disabled><option value="">Войдите для выбора модели</option></select>
+                        <button id="reload-models" class="text-button" type="button" hidden
+                                aria-label="Обновить модели и стоимость">Обновить</button>
+                    </div>
+                    <div class="toolbar-actions">
+                        <span id="total-cost" class="cost" role="status" hidden></span>
+                        <button id="logout" class="button button-quiet" type="button" hidden>Выйти</button>
+                    </div>
+                </div>
+
+                <div class="translation-panels">
+                    <section class="text-panel source-panel" aria-label="Исходный текст">
+                        <div class="panel-header">
+                            <div class="language-field">
+                                <div id="manual-source">
+                                    <label class="language-label" for="source-language">Исходный язык</label>
+                                    <select id="source-language"></select>
+                                    <input id="custom-source-language" class="custom-language" maxlength="80"
+                                           aria-label="Название исходного языка" placeholder="Название языка" hidden>
+                                </div>
+                                <p id="detected-language" class="detected-language" role="status" hidden></p>
+                                <label class="detection-toggle">
+                                    <input id="detect-source-language" type="checkbox">
+                                    Определить автоматически
+                                </label>
+                                <label class="usage-toggle">
+                                    <input id="include-usage" type="checkbox">
+                                    Варианты и примеры
+                                </label>
+                            </div>
+                            <button id="swap" class="icon-button" type="button" aria-label="Поменять языки местами" title="Поменять языки местами">⇄</button>
+                        </div>
+                        <label for="source-text" class="visually-hidden">Текст для перевода</label>
+                        <textarea id="source-text" maxlength="10000" dir="auto" spellcheck="true"
+                                  placeholder="Введите или вставьте текст для перевода…"
+                                  aria-describedby="source-count input-limit"></textarea>
+                        <div class="panel-footer">
+                            <span id="source-count">0 / 10 000 символов</span>
+                            <button id="clear" class="text-button" type="button" disabled>Очистить</button>
+                        </div>
+                    </section>
+
+                    <section class="text-panel result-panel" aria-labelledby="target-heading">
+                        <div class="panel-header">
+                            <div class="language-field">
+                                <label id="target-heading" class="language-label" for="target-language">Язык перевода</label>
+                                <select id="target-language"></select>
+                                <input id="custom-target-language" class="custom-language" maxlength="80"
+                                       aria-label="Название языка перевода" placeholder="Название языка" hidden>
+                            </div>
+                            <span class="result-badge">ПЕРЕВОД</span>
+                        </div>
+                        <div>
+                            <label for="result-text" class="visually-hidden">Результат перевода</label>
+                            <textarea id="result-text" readonly dir="auto" placeholder="Здесь появится перевод"
+                                      aria-describedby="result-status"></textarea>
+                            <div id="translation-details" class="translation-details" hidden>
+                                <section aria-labelledby="alternatives-heading" hidden>
+                                    <h3 id="alternatives-heading">Варианты перевода</h3>
+                                    <ul id="translation-alternatives"></ul>
+                                </section>
+                                <section aria-labelledby="examples-heading" hidden>
+                                    <h3 id="examples-heading">Примеры использования</h3>
+                                    <ul id="usage-examples"></ul>
+                                </section>
+                            </div>
+                        </div>
+                        <div class="panel-footer">
+                            <span id="result-status" role="status">Готов к работе</span>
+                            <button id="copy" class="text-button" type="button" disabled>Копировать <span aria-hidden="true">⧉</span></button>
+                        </div>
+                    </section>
+                </div>
+                <div class="workspace-footer">
+                    <div class="input-help">
+                        <p id="input-limit">До 10 000 символов. Лимит в байтах зависит от модели.</p>
+                        <span id="shortcut-hint">Ctrl + Enter для перевода</span>
+                        <p id="request-cost" class="cost" role="status" hidden></p>
+                    </div>
+                    <button id="translate" class="button button-primary translate-button" type="button" disabled>
+                        Перевести <span aria-hidden="true">→</span>
+                    </button>
+                </div>
+            </section>
+            <p id="translation-message" class="message" role="alert" hidden></p>
+
+            <footer class="footer">
+                <span><span class="footer-dot" aria-hidden="true"></span> AI-перевод</span>
+                <span>Сессия действует в этой вкладке до обновления страницы.</span>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

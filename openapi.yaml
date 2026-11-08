@@ -2,26 +2,25 @@ openapi: 3.0.3
 info:
   title: AI Translator API
   version: 0.0.1
-  description: Stateless plain-text translation using server-approved model aliases.
+  description: Plain-text translation using server-approved model aliases with per-account cost tracking.
 security:
   - bearerAuth: []
 paths:
   /v1/auth/register:
     post:
       operationId: register
-      summary: Create a local account and issue a token pair
-      description: Disabled by default; requires explicit REGISTRATION_ENABLED=true. Case-insensitive username. Grants only translate:write. Signup has its own per-address rate limit; all accounts share deployment-wide translation budgets.
-      security: []
+      summary: Create a local user account as an administrator
+      description: Requires a bearer token with the users:create scope. Usernames are case insensitive. The new user can sign in with the supplied credentials.
       requestBody: {$ref: '#/components/requestBodies/Credentials'}
       responses:
-        '201': {$ref: '#/components/responses/Tokens'}
+        '201': {description: Account created}
         '400': {$ref: '#/components/responses/Error'}
-        '403': {description: Public registration disabled (REGISTRATION_DISABLED)}
+        '401': {description: Missing or invalid bearer token}
+        '403': {description: Required users:create scope missing}
         '409': {description: Username unavailable}
         '408': {$ref: '#/components/responses/Error'}
         '413': {$ref: '#/components/responses/Error'}
         '415': {$ref: '#/components/responses/Error'}
-        '429': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
   /v1/auth/login:
@@ -77,29 +76,53 @@ paths:
   /v1/models:
     get:
       operationId: listModels
-      summary: List model aliases available to the caller
+      summary: List model names and aliases available to the caller
       description: Requires the translate:write scope.
       responses:
         '200':
-          description: Available aliases
+          description: Available models
           content:
             application/json:
               schema:
                 type: array
                 items:
                   type: object
-                  required: [id, provider, maxInputBytes]
+                  required: [id, name, provider, maxInputBytes]
                   properties:
-                    id: {type: string}
+                    id: {type: string, description: Alias to send in translation requests, example: translation-fast}
+                    name: {type: string, description: Configured model name for display, example: gpt-4.1-mini}
                     provider: {type: string}
                     maxInputBytes: {type: integer}
         '401': {description: Missing or invalid bearer token}
         '403': {description: Required scope missing}
+  /v1/translation-cost:
+    get:
+      operationId: getTranslationCost
+      summary: Get recorded translation costs for the caller's account
+      description: Requires the translate:write scope. The total includes known costs for retained request records.
+      responses:
+        '200':
+          description: Account cost summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [totalCostUsd, unpricedRequests]
+                properties:
+                  totalCostUsd: {type: number, minimum: 0, example: 0.000072}
+                  unpricedRequests: {type: integer, format: int64, minimum: 0, description: Terminal requests with unknown cost}
+        '401': {description: Missing or invalid bearer token}
+        '403': {description: Required scope missing}
+        '500': {$ref: '#/components/responses/Error'}
   /v1/translations:
     post:
       operationId: translate
       summary: Translate one independent text input
-      description: Requires translate:write and any model-specific scope. Source and target tags must be enabled in server configuration. Both account and deployment-wide concurrency/daily token limits apply. Request bodies have bounded admission and a total upload deadline.
+      description: >-
+        Requires translate:write and any model-specific scope. Languages may be given by code or name.
+        Specify a source language for manual translation, or enable detection and omit it.
+        Account and deployment-wide concurrency and daily token limits apply.
+        Request bodies have bounded admission and a total upload deadline.
       requestBody:
         required: true
         content:
@@ -107,11 +130,16 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [text, sourceLanguage, targetLanguage, model]
+              required: [text, targetLanguage, model]
               properties:
                 text: {type: string, minLength: 1, maxLength: 10000, example: 'Good morning!'}
-                sourceLanguage: {type: string, maxLength: 20, example: en}
-                targetLanguage: {type: string, maxLength: 20, example: ru}
+                sourceLanguage: {type: string, minLength: 1, maxLength: 80, example: en}
+                targetLanguage: {type: string, minLength: 1, maxLength: 80, example: ru}
+                detectSourceLanguage: {type: boolean, default: false}
+                includeUsage:
+                  type: boolean
+                  default: false
+                  description: Request alternatives for ambiguous short inputs and examples for words or short expressions.
                 model: {type: string, maxLength: 100, example: translation-fast}
       responses:
         '200':
@@ -120,13 +148,27 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [requestId, translatedText, sourceLanguage, targetLanguage, model]
+                required: [requestId, translatedText, sourceLanguage, targetLanguage, model, costUsd]
                 properties:
                   requestId: {type: string, format: uuid}
                   translatedText: {type: string}
-                  sourceLanguage: {type: string}
+                  alternatives:
+                    type: array
+                    description: Translations of distinct plausible meanings. Omitted when empty or not requested.
+                    items: {type: string}
+                  examples:
+                    type: array
+                    description: Usage examples for words and short expressions. Omitted when empty or not requested.
+                    items:
+                      type: object
+                      required: [sourceText, translatedText]
+                      properties:
+                        sourceText: {type: string}
+                        translatedText: {type: string}
+                  sourceLanguage: {type: string, description: Selected language or detected code or name. The value und means detection was inconclusive.}
                   targetLanguage: {type: string}
                   model: {type: string}
+                  costUsd: {type: number, minimum: 0, nullable: true, description: Estimated provider cost in USD. Null when pricing or usage is unavailable., example: 0.000072}
         '400': {$ref: '#/components/responses/Error'}
         '401': {description: Missing or invalid bearer token}
         '403': {description: Required scope or model permission missing}

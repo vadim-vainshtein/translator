@@ -1,7 +1,6 @@
 package dev.translator.auth;
 
 import dev.translator.api.ApiException;
-import dev.translator.config.TranslatorProperties;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -25,26 +24,16 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
     private final AuthService auth;
     private final AuthRateLimiter limiter;
-    private final boolean registrationEnabled;
 
-    public AuthController(
-            AuthService auth, AuthRateLimiter limiter, TranslatorProperties properties) {
+    public AuthController(AuthService auth, AuthRateLimiter limiter) {
         this.auth = auth;
         this.limiter = limiter;
-        registrationEnabled = properties.security().registrationEnabled();
     }
 
     @PostMapping(value = "/register", consumes = MediaType.APPLICATION_JSON_VALUE)
-    ResponseEntity<AuthService.Tokens> register(
-            @Valid @RequestBody Credentials body, HttpServletRequest request) {
-        if (!registrationEnabled) {
-            throw new ApiException(
-                    HttpStatus.FORBIDDEN,
-                    "REGISTRATION_DISABLED",
-                    "Public registration is disabled.");
-        }
-        limiter.admit("signup:" + request.getRemoteAddr());
-        return tokens(HttpStatus.CREATED, auth.register(body.username(), body.password()));
+    ResponseEntity<Void> register(@Valid @RequestBody Credentials body) {
+        auth.register(body.username(), body.password());
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).build();
     }
 
     @PostMapping(value = "/login", consumes = MediaType.APPLICATION_JSON_VALUE)

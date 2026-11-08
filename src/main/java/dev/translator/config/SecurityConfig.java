@@ -113,15 +113,23 @@ public class SecurityConfig {
                 .authorizeHttpRequests(
                         auth ->
                                 auth.requestMatchers(
+                                                HttpMethod.GET,
+                                                "/",
+                                                "/index.html",
+                                                "/app.css",
+                                                "/app.js")
+                                        .permitAll()
+                                        .requestMatchers(HttpMethod.POST, "/v1/auth/register")
+                                        .hasAuthority("SCOPE_users:create")
+                                        .requestMatchers(
                                                 HttpMethod.POST,
-                                                "/v1/auth/register",
                                                 "/v1/auth/login",
                                                 "/v1/auth/refresh",
                                                 "/v1/auth/logout")
                                         .permitAll()
                                         .requestMatchers(HttpMethod.POST, "/v1/translations")
                                         .hasAuthority("SCOPE_translate:write")
-                                        .requestMatchers(HttpMethod.GET, "/v1/models")
+                                        .requestMatchers(HttpMethod.GET, "/v1/models", "/v1/translation-cost")
                                         .hasAuthority("SCOPE_translate:write")
                                         .anyRequest()
                                         .denyAll())

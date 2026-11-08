@@ -5,11 +5,13 @@ import dev.translator.config.TranslatorProperties;
 import dev.translator.translation.TranslationCommand;
 import dev.translator.translation.TranslationPrompt;
 import dev.translator.translation.TranslationProvider.ProviderResult;
+import dev.translator.translation.TranslationProvider.ProviderUsage;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
@@ -46,13 +48,17 @@ public class QuotaService {
     }
 
     @Transactional
-    public void success(UUID requestId, ProviderResult result) {
-        repository.success(requestId, result);
+    public void success(UUID requestId, ProviderResult result, BigDecimal costUsd) {
+        repository.success(requestId, result, costUsd);
+    }
+
+    public CostSummary costSummary(String account) {
+        return repository.costSummary(account);
     }
 
     @Transactional
-    public void failure(UUID requestId, String code) {
-        repository.failure(requestId, code);
+    public void failure(UUID requestId, String code, ProviderUsage usage, BigDecimal costUsd) {
+        repository.failure(requestId, code, usage, costUsd);
     }
 
     private void requireAccountCapacity(QuotaRepository.Usage usage) {
