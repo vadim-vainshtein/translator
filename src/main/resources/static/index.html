@@ -63,6 +63,35 @@
                 <p id="create-user-message" class="message" role="status" hidden></p>
             </section>
 
+            <section id="change-password-panel" class="auth-panel" aria-labelledby="change-password-title" hidden>
+                <div class="auth-heading">
+                    <h2 id="change-password-title">Сменить пароль</h2>
+                    <p>После смены пароля войдите в аккаунт заново.</p>
+                </div>
+                <form id="change-password-form" class="auth-form change-password-form" method="post">
+                    <div class="field">
+                        <label for="current-password">Текущий пароль</label>
+                        <input id="current-password" type="password" autocomplete="current-password"
+                               required minlength="12" maxlength="72">
+                    </div>
+                    <div class="field">
+                        <label for="replacement-password">Новый пароль</label>
+                        <input id="replacement-password" type="password" autocomplete="new-password"
+                               required minlength="12" maxlength="72" aria-describedby="change-password-hint">
+                    </div>
+                    <div class="field">
+                        <label for="confirm-password">Повторите новый пароль</label>
+                        <input id="confirm-password" type="password" autocomplete="new-password"
+                               required minlength="12" maxlength="72">
+                    </div>
+                    <button id="change-password-submit" class="button button-primary" type="submit">Сохранить</button>
+                </form>
+                <div class="auth-footer">
+                    <span id="change-password-hint">Пароль: от 12 символов, до 72 байт.</span>
+                </div>
+                <p id="change-password-message" class="message" role="alert" hidden></p>
+            </section>
+
             <section class="workspace" aria-label="Перевод текста">
                 <div class="workspace-toolbar">
                     <div class="model-field">
@@ -74,6 +103,8 @@
                     </div>
                     <div class="toolbar-actions">
                         <span id="total-cost" class="cost" role="status" hidden></span>
+                        <button id="change-password" class="button button-quiet" type="button" hidden
+                                aria-controls="change-password-panel" aria-expanded="false">Сменить пароль</button>
                         <button id="logout" class="button button-quiet" type="button" hidden>Выйти</button>
                     </div>
                 </div>

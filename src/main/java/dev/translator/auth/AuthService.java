@@ -63,7 +63,29 @@ public class AuthService {
         if (!matches || user == null) {
             throw unauthorized("Invalid username or password.");
         }
-        return transactions.execute(status -> newSession(user.id()));
+        return transactions.execute(status -> newSessionIfPasswordUnchanged(user));
+    }
+
+    public void changePassword(String subject, String currentPassword, String newPassword) {
+        validatePassword(currentPassword);
+        validatePassword(newPassword);
+        UUID user = localAccountId(subject);
+        limiter.admit("change-password:" + user);
+
+        String currentHash = repository.findPasswordHash(user);
+        if (currentHash == null) {
+            throw localAccountRequired();
+        }
+        if (!passwords.matches(currentPassword, currentHash)) {
+            throw invalidCurrentPassword();
+        }
+        if (passwords.matches(newPassword, currentHash)) {
+            throw new ApiException(
+                    HttpStatus.BAD_REQUEST, "PASSWORD_UNCHANGED", "New password must be different.");
+        }
+        String newHash = passwords.encode(newPassword);
+        transactions.executeWithoutResult(
+                status -> replacePassword(user, currentHash, newHash));
     }
 
     // Replay revocation must commit even though the request returns 401.
@@ -89,6 +111,13 @@ public class AuthService {
         }
     }
 
+    private void replacePassword(UUID user, String currentHash, String newHash) {
+        if (!repository.updatePasswordHash(user, currentHash, newHash)) {
+            throw invalidCurrentPassword();
+        }
+        repository.revokeUserFamilies(user);
+    }
+
     private void requireActiveFamily(AuthRepository.Family family, OffsetDateTime now) {
         if (family.revoked() || !family.expires().isAfter(now)) {
             throw unauthorized("Invalid refresh token.");
@@ -103,6 +132,14 @@ public class AuthService {
         }
     }
 
+    private Tokens newSessionIfPasswordUnchanged(AuthRepository.User user) {
+        // The account lock serializes login's session creation with password changes.
+        if (!user.passwordHash().equals(repository.lockPasswordHash(user.id()))) {
+            throw unauthorized("Invalid username or password.");
+        }
+        return newSession(user.id());
+    }
+
     private Tokens newSession(UUID user) {
         UUID family = UUID.randomUUID();
         OffsetDateTime now = repository.now();
@@ -113,6 +150,24 @@ public class AuthService {
 
     private static String canonical(String username) {
         return username.toLowerCase(Locale.ROOT);
+    }
+
+    private static UUID localAccountId(String subject) {
+        try {
+            return UUID.fromString(subject);
+        } catch (IllegalArgumentException exception) {
+            throw localAccountRequired();
+        }
+    }
+
+    private static ApiException localAccountRequired() {
+        return new ApiException(
+                HttpStatus.FORBIDDEN, "LOCAL_ACCOUNT_REQUIRED", "A local account is required.");
+    }
+
+    private static ApiException invalidCurrentPassword() {
+        return new ApiException(
+                HttpStatus.FORBIDDEN, "INVALID_CURRENT_PASSWORD", "Current password is incorrect.");
     }
 
     private static void validatePassword(String password) {

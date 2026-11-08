@@ -2,6 +2,9 @@ package dev.translator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,8 +34,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -92,6 +97,9 @@ class TranslatorIntegrationTest {
     @Autowired QuotaService quota;
     @Autowired TranslatorProperties properties;
     @Autowired SpringLiquibase liquibase;
+
+    @MockitoSpyBean
+    PasswordEncoder passwords;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -564,6 +572,142 @@ class TranslatorIntegrationTest {
         assertThat(jdbc.queryForList("SELECT username FROM auth_user", String.class))
                 .containsExactly("admin");
         assertThat(providerCalls.get()).isZero();
+    }
+
+    @Test
+    void passwordChangeReplacesCredentialsAndRevokesEveryRefreshSessionForThatAccount()
+            throws Exception {
+        var firstSession = createUserAndLogin("alice");
+        var secondSession = refresh(login("alice", userPassword));
+        var otherAccount = createUserAndLogin("bob");
+        String firstAccessToken = firstSession.path("accessToken").asText();
+        String newPassword = "界".repeat(24);
+
+        var changed = auth(
+                "change-password", passwordChangeBody(userPassword, newPassword), firstAccessToken);
+        assertThat(changed.statusCode()).isEqualTo(204);
+        assertThat(get(firstAccessToken, "/v1/models").statusCode()).isEqualTo(200);
+        assertThat(auth("login", credentials("alice", userPassword)).statusCode()).isEqualTo(401);
+        for (var oldSession : List.of(firstSession, secondSession)) {
+            String body = refreshBody(oldSession.path("refreshToken").asText());
+            assertThat(auth("refresh", body).statusCode()).isEqualTo(401);
+        }
+
+        var newSession = login("alice", newPassword);
+        var newClaims = SignedJWT.parse(newSession.path("accessToken").asText()).getJWTClaimsSet();
+        assertThat(newClaims.getSubject())
+                .isEqualTo(SignedJWT.parse(firstAccessToken).getJWTClaimsSet().getSubject());
+        refresh(newSession);
+        refresh(otherAccount);
+        login("bob", userPassword);
+    }
+
+    @Test
+    void passwordChangeValidatesTheLocalAccountAndBothPasswords() throws Exception {
+        var session = createUserAndLogin("alice");
+        String accessToken = session.path("accessToken").asText();
+        String newPassword = "another long password";
+        String validBody = passwordChangeBody(userPassword, newPassword);
+        for (String subject : List.of("external-user", UUID.randomUUID().toString())) {
+            var rejected = auth("change-password", validBody, validToken(subject));
+            assertThat(rejected.statusCode()).isEqualTo(403);
+            assertThat(json.readTree(rejected.body()).path("code").asText())
+                    .isEqualTo("LOCAL_ACCOUNT_REQUIRED");
+        }
+        for (String invalid : List.of(
+                "{}",
+                passwordChangeBody("short", newPassword),
+                passwordChangeBody(userPassword, "short"),
+                passwordChangeBody("界".repeat(25), newPassword),
+                passwordChangeBody(userPassword, "界".repeat(25)))) {
+            assertThat(auth("change-password", invalid, accessToken).statusCode()).isEqualTo(400);
+        }
+
+        login("alice", userPassword);
+        refresh(session);
+    }
+
+    @Test
+    void rejectedPasswordChangesCountAgainstAnIndependentAccountLimit() throws Exception {
+        var session = createUserAndLogin("alice");
+        String accessToken = session.path("accessToken").asText();
+        String newPassword = "another long password";
+        var rejected = auth(
+                "change-password", passwordChangeBody("incorrect password", newPassword), accessToken);
+        assertThat(rejected.statusCode()).isEqualTo(403);
+        assertThat(json.readTree(rejected.body()).path("code").asText())
+                .isEqualTo("INVALID_CURRENT_PASSWORD");
+
+        String subject = SignedJWT.parse(accessToken).getJWTClaimsSet().getSubject();
+        int updated = jdbc.update(
+                "UPDATE auth_rate_limit SET attempts = ? WHERE client_hash = ?",
+                properties.security().authRequestsPerMinute(),
+                sha256("change-password:" + subject));
+        assertThat(updated).isOne();
+        var throttled = auth(
+                "change-password", passwordChangeBody(userPassword, newPassword), accessToken);
+        assertThat(throttled.statusCode()).isEqualTo(429);
+        assertThat(json.readTree(throttled.body()).path("code").asText()).isEqualTo("AUTH_RATE_LIMIT");
+
+        login("alice", userPassword);
+        refresh(session);
+        var otherAccount = createUserAndLogin("bob");
+        assertThat(auth(
+                        "change-password",
+                        passwordChangeBody(userPassword, newPassword),
+                        otherAccount.path("accessToken").asText())
+                .statusCode()).isEqualTo(204);
+    }
+
+    @Test
+    void changingToTheCurrentPasswordKeepsTheExistingRefreshSession() throws Exception {
+        var session = createUserAndLogin("alice");
+        String existingHash = authRepository.findUser("alice").passwordHash();
+        var rejected = auth(
+                "change-password",
+                passwordChangeBody(userPassword, userPassword),
+                session.path("accessToken").asText());
+
+        assertThat(rejected.statusCode()).isEqualTo(400);
+        assertThat(json.readTree(rejected.body()).path("code").asText()).isEqualTo("PASSWORD_UNCHANGED");
+        assertThat(authRepository.findUser("alice").passwordHash()).isEqualTo(existingHash);
+        refresh(session);
+    }
+
+    @Test
+    void aConcurrentLoginWithTheOldPasswordCannotLeaveAnActiveRefreshSession() throws Exception {
+        var session = createUserAndLogin("alice");
+        String accessToken = session.path("accessToken").asText();
+        String changeBody = passwordChangeBody(userPassword, "another long password");
+        String loginBody = credentials("alice", userPassword);
+        var loginVerified = new CountDownLatch(1);
+        var passwordChanged = new CountDownLatch(1);
+
+        // Pause the login after BCrypt has accepted the old password.
+        doAnswer(invocation -> {
+            boolean matches = (boolean) invocation.callRealMethod();
+            if (loginVerified.getCount() != 0) {
+                assertThat(matches).isTrue();
+                loginVerified.countDown();
+                assertThat(passwordChanged.await(15, TimeUnit.SECONDS)).isTrue();
+            }
+            return matches;
+        }).when(passwords).matches(eq(userPassword), anyString());
+
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var loggingIn = workers.submit(() -> auth("login", loginBody));
+            try {
+                assertThat(loginVerified.await(10, TimeUnit.SECONDS)).isTrue();
+                assertThat(auth("change-password", changeBody, accessToken).statusCode()).isEqualTo(204);
+            } finally {
+                passwordChanged.countDown();
+            }
+            assertThat(loggingIn.get(15, TimeUnit.SECONDS).statusCode()).isEqualTo(401);
+        }
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM auth_refresh_family WHERE revoked_at IS NULL", Integer.class))
+                .isZero();
     }
 
     @Test
@@ -1118,6 +1262,11 @@ class TranslatorIntegrationTest {
 
     private String credentials(String username, String password) throws Exception {
         return json.writeValueAsString(Map.of("username", username, "password", password));
+    }
+
+    private String passwordChangeBody(String currentPassword, String newPassword) throws Exception {
+        return json.writeValueAsString(
+                Map.of("currentPassword", currentPassword, "newPassword", newPassword));
     }
 
     private String refreshBody(String token) throws Exception {

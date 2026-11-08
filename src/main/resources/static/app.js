@@ -10,6 +10,10 @@
         createUserPanel: element("create-user-panel"), createUserForm: element("create-user-form"),
         createUserSubmit: element("create-user-submit"), createUserMessage: element("create-user-message"),
         newUsername: element("new-username"), newPassword: element("new-password"),
+        changePassword: element("change-password"), changePasswordPanel: element("change-password-panel"),
+        changePasswordForm: element("change-password-form"), changePasswordSubmit: element("change-password-submit"),
+        changePasswordMessage: element("change-password-message"), currentPassword: element("current-password"),
+        replacementPassword: element("replacement-password"), confirmPassword: element("confirm-password"),
         model: element("model"), reloadModels: element("reload-models"),
         totalCost: element("total-cost"), requestCost: element("request-cost"),
         sourceLanguage: element("source-language"), targetLanguage: element("target-language"),
@@ -33,6 +37,8 @@
     const messages = {
         USERNAME_UNAVAILABLE: "Это имя пользователя уже занято. Выберите другое.",
         INVALID_CREDENTIALS: "Неверное имя пользователя или пароль.",
+        INVALID_CURRENT_PASSWORD: "Текущий пароль неверен.",
+        PASSWORD_UNCHANGED: "Новый пароль должен отличаться от текущего.",
         INVALID_REQUEST: "Проверьте введённые данные и ограничения полей.",
         UNSUPPORTED_LANGUAGE: "Проверьте название языка или выберите его из списка.",
         UNKNOWN_MODEL: "Модель больше недоступна. Загрузите список моделей снова.",
@@ -40,7 +46,7 @@
         TEXT_TOO_LARGE: "Текст превышает лимит выбранной модели. Сократите его.",
         REQUEST_TOO_LARGE: "Запрос слишком большой. Сократите исходный текст.",
         RATE_LIMIT: "Слишком много запросов. Подождите минуту и попробуйте снова.",
-        AUTH_RATE_LIMIT: "Слишком много попыток входа. Подождите минуту и попробуйте снова.",
+        AUTH_RATE_LIMIT: "Слишком много попыток. Подождите минуту и попробуйте снова.",
         CONCURRENCY_LIMIT: "Предыдущие переводы ещё выполняются. Попробуйте немного позже.",
         GLOBAL_CONCURRENCY_LIMIT: "Сервис занят. Попробуйте немного позже.",
         DAILY_QUOTA: "Дневной лимит переводов вашего аккаунта исчерпан.",
@@ -60,6 +66,7 @@
     const languageNames = new Map(languages);
     const localizedLanguages = new Intl.DisplayNames(["ru"], { type: "language" });
     const usd = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 12 });
+    const passwordFields = [ui.currentPassword, ui.replacementPassword, ui.confirmPassword];
     const bytes = (value) => new TextEncoder().encode(value).length;
     const number = (value) => value.toLocaleString("ru-RU");
 
@@ -136,8 +143,14 @@
         const signedIn = Boolean(state.session);
         ui.authPanel.hidden = signedIn;
         ui.logout.hidden = !signedIn;
+        ui.changePassword.hidden = !signedIn;
         ui.totalCost.hidden = !signedIn;
         ui.logout.disabled = busy;
+        ui.changePassword.disabled = busy;
+        ui.changePasswordSubmit.disabled = busy;
+        for (const input of passwordFields) {
+            input.disabled = busy;
+        }
         ui.authSubmit.disabled = busy;
         ui.username.disabled = busy;
         ui.password.disabled = busy;
@@ -231,6 +244,7 @@
         ui.createUserForm.reset();
         ui.newPassword.setCustomValidity("");
         showMessage(ui.createUserMessage);
+        closePasswordChange();
         ui.model.replaceChildren(new Option("Войдите для выбора модели", ""));
         ui.totalCost.textContent = "";
         invalidateResult();
@@ -381,6 +395,28 @@
         return false;
     }
 
+    function closePasswordChange() {
+        ui.changePasswordForm.reset();
+        for (const input of passwordFields) {
+            input.setCustomValidity("");
+        }
+        showMessage(ui.changePasswordMessage);
+        ui.changePasswordPanel.hidden = true;
+        ui.changePassword.setAttribute("aria-expanded", "false");
+    }
+
+    function validatePasswordChange() {
+        if (!validatePassword(ui.currentPassword) || !validatePassword(ui.replacementPassword)) {
+            return false;
+        }
+        if (ui.replacementPassword.value !== ui.confirmPassword.value) {
+            ui.confirmPassword.setCustomValidity("Новые пароли не совпадают.");
+            ui.confirmPassword.reportValidity();
+            return false;
+        }
+        return true;
+    }
+
     ui.password.addEventListener("input", () => ui.password.setCustomValidity(""));
     ui.authForm.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -431,6 +467,54 @@
             ui.newPassword.value = "";
             state.creatingUser = false;
             updateControls();
+        }
+    });
+
+    ui.changePassword.addEventListener("click", () => {
+        if (ui.changePasswordPanel.hidden) {
+            ui.changePasswordPanel.hidden = false;
+            ui.changePassword.setAttribute("aria-expanded", "true");
+            ui.currentPassword.focus();
+        } else {
+            closePasswordChange();
+        }
+    });
+
+    ui.currentPassword.addEventListener("input", () => ui.currentPassword.setCustomValidity(""));
+    ui.replacementPassword.addEventListener("input", () => {
+        ui.replacementPassword.setCustomValidity("");
+        ui.confirmPassword.setCustomValidity("");
+    });
+    ui.confirmPassword.addEventListener("input", () => ui.confirmPassword.setCustomValidity(""));
+    ui.changePasswordForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!state.session || ui.changePasswordSubmit.disabled || !validatePasswordChange()) {
+            return;
+        }
+        state.authBusy = true;
+        showMessage(ui.changePasswordMessage);
+        updateControls();
+        const body = {
+            currentPassword: ui.currentPassword.value,
+            newPassword: ui.replacementPassword.value
+        };
+        try {
+            await authenticatedRequest("/v1/auth/change-password", body);
+            clearSession();
+            showMessage(ui.authMessage, "Пароль изменён. Войдите с новым паролем.", true);
+        } catch (error) {
+            if (state.session) {
+                showMessage(ui.changePasswordMessage, error.message);
+            }
+        } finally {
+            body.currentPassword = "";
+            body.newPassword = "";
+            ui.changePasswordForm.reset();
+            state.authBusy = false;
+            updateControls();
+            if (!state.session) {
+                ui.password.focus();
+            }
         }
     });
 

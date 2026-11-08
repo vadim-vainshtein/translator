@@ -6,10 +6,14 @@ the existing instructions in [README.md](README.md), then open that address.
 No Node.js installation, frontend build, or separate web server is needed.
 The Maven build packages the HTML, CSS, and JavaScript with the application.
 
-Sign in with an existing account. The administrator signs in as `admin` using
-the password configured on first startup and can use **Создать пользователя** to
-provision an account. The new user signs in separately. Usernames and passwords
-follow the API constraints, including the password limit of 72 UTF-8 bytes.
+Sign in with an existing account and its current password. `ADMIN_PASSWORD` sets
+the initial password for `admin`, who can use **Создать пользователя** to provision
+an account. The new user signs in separately. Usernames and passwords follow the
+API constraints, including the password limit of 72 UTF-8 bytes.
+
+While signed in, use **Сменить пароль** in the toolbar. Enter the current
+password, then enter the new password twice. A successful change signs you out
+in this tab. Sign in again with the new password.
 
 Choose source and target languages from the list or select **Другой язык…** and
 enter a name. Use **Определить автоматически** to have the model identify the

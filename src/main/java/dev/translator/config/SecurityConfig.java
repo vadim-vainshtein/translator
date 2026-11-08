@@ -121,6 +121,8 @@ public class SecurityConfig {
                                         .permitAll()
                                         .requestMatchers(HttpMethod.POST, "/v1/auth/register")
                                         .hasAuthority("SCOPE_users:create")
+                                        .requestMatchers(HttpMethod.POST, "/v1/auth/change-password")
+                                        .authenticated()
                                         .requestMatchers(
                                                 HttpMethod.POST,
                                                 "/v1/auth/login",

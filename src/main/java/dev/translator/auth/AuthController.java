@@ -14,6 +14,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -42,6 +43,14 @@ public class AuthController {
         return tokens(
                 HttpStatus.OK,
                 auth.login(body.username(), body.password(), request.getRemoteAddr()));
+    }
+
+    @PostMapping(value = "/change-password", consumes = MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<Void> changePassword(
+            @Valid @RequestBody ChangePasswordRequest body, JwtAuthenticationToken authentication) {
+        auth.changePassword(
+                authentication.getToken().getSubject(), body.currentPassword(), body.newPassword());
+        return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
 
     @PostMapping(value = "/refresh", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -80,6 +89,15 @@ public class AuthController {
         @Override
         public String toString() {
             return "Credentials[REDACTED]";
+        }
+    }
+
+    public record ChangePasswordRequest(
+            @NotNull @Size(min = 12, max = 72) String currentPassword,
+            @NotNull @Size(min = 12, max = 72) String newPassword) {
+        @Override
+        public String toString() {
+            return "ChangePasswordRequest[REDACTED]";
         }
     }
 

@@ -106,6 +106,24 @@ class FrontendAccessTest {
         verifyNoInteractions(limiter);
     }
 
+    @Test
+    void passwordChangeRequiresAuthenticationAndPassesTheTokenSubject() throws Exception {
+        String passwords = """
+                {"currentPassword":"correct horse battery","newPassword":"another long password"}
+                """;
+        String path = "/v1/auth/change-password";
+        assertThat(post(path, null, passwords).statusCode()).isEqualTo(401);
+        assertThat(post(path, "invalid-token", passwords).statusCode()).isEqualTo(401);
+        verifyNoInteractions(auth);
+
+        var changed = post(path, tokenWithScope("translate:write"), passwords);
+        assertThat(changed.statusCode()).isEqualTo(204);
+        assertThat(changed.headers().firstValue("Cache-Control").orElseThrow())
+                .contains("no-store");
+        assertThat(changed.body()).isEmpty();
+        verify(auth).changePassword("frontend-test", "correct horse battery", "another long password");
+    }
+
     private HttpResponse<String> get(String path, String token) throws Exception {
         return http.send(request(path, token).GET().build(), HttpResponse.BodyHandlers.ofString());
     }

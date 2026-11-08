@@ -92,6 +92,10 @@ h2 {
     align-items: end;
 }
 
+.change-password-form {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+}
+
 .field label {
     display: block;
     font-size: 11px;
@@ -522,6 +526,9 @@ textarea:disabled {
     }
     .auth-form .button {
         grid-column: span 2;
+    }
+    .change-password-form .button {
+        grid-column: auto;
     }
     .panel-header, .panel-footer {
         padding-left: 19px;

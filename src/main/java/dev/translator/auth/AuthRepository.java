@@ -40,6 +40,38 @@ public class AuthRepository {
         return users.isEmpty() ? null : users.getFirst();
     }
 
+    public String findPasswordHash(UUID user) {
+        var hashes = jdbc.queryForList(
+                """
+                SELECT password_hash FROM auth_user WHERE user_id = ?
+                """,
+                String.class,
+                user);
+        return hashes.isEmpty() ? null : hashes.getFirst();
+    }
+
+    public String lockPasswordHash(UUID user) {
+        var hashes = jdbc.queryForList(
+                """
+                SELECT password_hash FROM auth_user WHERE user_id = ? FOR NO KEY UPDATE
+                """,
+                String.class,
+                user);
+        return hashes.isEmpty() ? null : hashes.getFirst();
+    }
+
+    public boolean updatePasswordHash(UUID user, String currentHash, String newHash) {
+        return jdbc.update(
+                        """
+                        UPDATE auth_user SET password_hash = ?
+                        WHERE user_id = ? AND password_hash = ?
+                        """,
+                        newHash,
+                        user,
+                        currentHash)
+                != 0;
+    }
+
     public Family lockFamily(String refreshToken) {
         var ids =
                 jdbc.queryForList(
@@ -111,6 +143,15 @@ public class AuthRepository {
                 """,
                 now,
                 family);
+    }
+
+    public void revokeUserFamilies(UUID user) {
+        jdbc.update(
+                """
+                UPDATE auth_refresh_family SET revoked_at = clock_timestamp()
+                WHERE user_id = ? AND revoked_at IS NULL
+                """,
+                user);
     }
 
     public OffsetDateTime now() {

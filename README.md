@@ -125,11 +125,11 @@ is made at startup.
 The service owns accounts and issues RS256 JWTs; no external identity provider or
 JWKS endpoint is required. External-provider tokens are no longer accepted.
 
-Sign in as `admin` with the `ADMIN_PASSWORD` configured on first startup. The
-password must be nonblank, contain 12–72 characters, and fit in 72 UTF-8 bytes.
-The service keeps the stored password on subsequent starts. An existing account
-named `admin` from an earlier version causes startup to fail if it was created
-through public registration. Rename that account in the database before upgrading.
+On first startup, the service creates `admin` using `ADMIN_PASSWORD`. This
+bootstrap password must be nonblank, contain 12–72 characters, and fit in 72 UTF-8
+bytes. The service keeps the stored password on subsequent starts. An existing
+account named `admin` from an earlier version causes startup to fail if it was
+created through public registration. Rename that account in the database before upgrading.
 
 The administrator can create users from the browser or by sending an access token
 with the `users:create` scope to `POST /v1/auth/register`. The service returns
@@ -194,8 +194,26 @@ consumed token. Unknown or already revoked well-formed tokens also return 204.
 Already issued access JWTs remain valid until expiration after logout or replay
 revocation. Token-bearing responses use `Cache-Control: no-store`. Keep tokens
 out of URLs and logs, and store refresh tokens securely on the client. Cookies,
-password reset/recovery, email verification, account management, MFA, and immediate
-access-token revocation are not implemented.
+password reset/recovery, email verification, MFA, and immediate access-token
+revocation are not implemented.
+
+Any signed-in local account, including `admin`, can change its own password in
+the browser or through `POST /v1/auth/change-password`.
+
+```sh
+curl http://localhost:8080/v1/auth/change-password \
+  -H 'Authorization: Bearer ACCESS_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"currentPassword":"a-long-unique-password","newPassword":"another-long-unique-password"}'
+```
+
+The endpoint returns `204 No Content` and revokes all refresh sessions for the
+account. Sign in again with the new password. Already issued access JWTs remain
+valid until they expire. An incorrect current password returns
+`403 INVALID_CURRENT_PASSWORD`. The replacement must differ from the current
+password, or the service returns `400 PASSWORD_UNCHANGED`. Password-change attempts
+use a separate per-account rate limit. The administrator's updated password persists
+across restarts.
 
 Authentication uses separate PostgreSQL-backed buckets, each allowing 30
 attempts/minute (`AUTH_REQUESTS_PER_MINUTE`). Existing-account login attempts are

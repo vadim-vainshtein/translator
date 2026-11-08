@@ -57,6 +57,33 @@ paths:
         '429': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /v1/auth/change-password:
+    post:
+      operationId: changePassword
+      summary: Change the caller's password
+      description: >-
+        Requires a bearer token for a local account and its current password.
+        Revokes all refresh-token families for that account. Existing access tokens
+        remain valid until expiration. Password changes have a separate per-account rate limit.
+        A wrong current password returns INVALID_CURRENT_PASSWORD. A bearer token
+        with no matching local account returns LOCAL_ACCOUNT_REQUIRED.
+        A replacement that matches the current password returns PASSWORD_UNCHANGED.
+      requestBody: {$ref: '#/components/requestBodies/PasswordChange'}
+      responses:
+        '204':
+          description: Password changed and refresh sessions revoked
+          headers:
+            Cache-Control:
+              schema: {type: string, enum: [no-store]}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {description: Missing or invalid bearer token}
+        '403': {$ref: '#/components/responses/Error'}
+        '408': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /v1/auth/logout:
     post:
       operationId: logout
@@ -194,6 +221,17 @@ components:
             properties:
               username: {type: string, pattern: '^[A-Za-z0-9_]{3,64}$', description: Case-insensitive local username}
               password: {type: string, format: password, minLength: 12, maxLength: 72, description: At most 72 UTF-8 bytes; BCrypt passwords are not truncated}
+    PasswordChange:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [currentPassword, newPassword]
+            properties:
+              currentPassword: {type: string, format: password, minLength: 12, maxLength: 72, description: At most 72 UTF-8 bytes}
+              newPassword: {type: string, format: password, minLength: 12, maxLength: 72, description: At most 72 UTF-8 bytes}
     RefreshToken:
       required: true
       content:
