@@ -7,6 +7,7 @@
     <title>Переводчик</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/app.css">
+    <script src="/session-store.js" defer></script>
     <script src="/app.js" defer></script>
 </head>
 <body>
@@ -187,7 +188,7 @@
 
             <footer class="footer">
                 <span><span class="footer-dot" aria-hidden="true"></span> AI-перевод</span>
-                <span>Сессия действует в этой вкладке до обновления страницы.</span>
+                <span id="session-status">Вход сохраняется между запусками.</span>
             </footer>
         </main>
     </div>

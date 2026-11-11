@@ -7,3 +7,4 @@
 /secrets/
 *.pem
 *.key
+/clients/windows/target/

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="restoring_session">Восстановление сессии…</string>
+    <string name="restore_failed">Не удалось восстановить сессию. Войдите снова.</string>
+    <string name="app_name">Переводчик</string>
+    <string name="sign_in_title">Вход в аккаунт</string>
+    <string name="server_label">Адрес сервера</string>
+    <string name="server_hint">https://translator.example.com</string>
+    <string name="username_label">Имя пользователя</string>
+    <string name="password_label">Пароль</string>
+    <string name="sign_in">Войти</string>
+    <string name="signing_in">Вход…</string>
+    <string name="sign_out">Выйти</string>
+    <string name="signing_out">Выход…</string>
+    <string name="signed_out_locally">Вход на устройстве завершён. Сервер не подтвердил выход.</string>
+    <string name="credentials_required">Введите имя пользователя и пароль.</string>
+    <string name="session_ended">Сессия завершена. Войдите снова.</string>
+    <string name="session_ended_with_result">Сессия завершена. Перевод можно скопировать перед повторным входом.</string>
+    <string name="sign_in_again">Войти снова</string>
+    <string name="model_label">Модель</string>
+    <string name="reload_models">Загрузить модели</string>
+    <string name="loading_models">Загрузка моделей…</string>
+    <string name="no_models">Нет доступных моделей</string>
+    <string name="auto_detect">Определять исходный язык автоматически</string>
+    <string name="source_label">Исходный язык</string>
+    <string name="target_label">Язык перевода</string>
+    <string name="default_source_language" translatable="false">en</string>
+    <string name="default_target_language" translatable="false">ru</string>
+    <string name="language_hint">Код или название языка</string>
+    <string name="language_required">Укажите код или название каждого выбранного языка (до 80 символов).</string>
+    <string name="text_label">Исходный текст</string>
+    <string name="text_required">Введите исходный текст.</string>
+    <string name="text_limit">Максимум %1$d символов и %2$d байт UTF-8 для выбранной модели.</string>
+    <string name="include_usage">Показывать варианты и примеры</string>
+    <string name="translate">Перевести</string>
+    <string name="translating">Перевод…</string>
+    <string name="result_title">Перевод</string>
+    <string name="language_pair">Языки · %1$s → %2$s</string>
+    <string name="language_undetermined">не определён</string>
+    <string name="copy">Копировать перевод</string>
+    <string name="copied">Перевод скопирован</string>
+    <string name="alternatives_title">Варианты</string>
+    <string name="examples_title">Примеры</string>
+    <string name="example_format">%1$s\n%2$s</string>
+    <string name="request_cost">Стоимость перевода · %1$s USD</string>
+    <string name="request_cost_unknown">Стоимость перевода недоступна</string>
+    <string name="reload_cost">Обновить стоимость</string>
+    <string name="loading_cost">Загрузка стоимости…</string>
+    <string name="account_cost">Учтено по аккаунту · %1$s USD</string>
+    <string name="account_cost_partial">Учтено по аккаунту · %1$s USD · без оценки: %2$d</string>
+    <string name="account_cost_unknown">Общая стоимость недоступна</string>
+</resources>

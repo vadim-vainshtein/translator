@@ -117,7 +117,8 @@ public class SecurityConfig {
                                                 "/",
                                                 "/index.html",
                                                 "/app.css",
-                                                "/app.js")
+                                                "/app.js",
+                                                "/session-store.js")
                                         .permitAll()
                                         .requestMatchers(HttpMethod.POST, "/v1/auth/register")
                                         .hasAuthority("SCOPE_users:create")

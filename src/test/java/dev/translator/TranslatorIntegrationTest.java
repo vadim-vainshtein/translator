@@ -743,6 +743,31 @@ class TranslatorIntegrationTest {
     }
 
     @Test
+    void independentLoginsRemainActiveAfterAnotherSessionLogsOut() throws Exception {
+        var windowsSession = createUserAndLogin("alice");
+        var androidSession = login("alice", userPassword);
+        var browserSession = login("alice", userPassword);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM auth_refresh_family", Integer.class))
+                .isEqualTo(3);
+
+        var renewedWindowsSession = refresh(windowsSession);
+        var renewedAndroidSession = refresh(androidSession);
+        var renewedBrowserSession = refresh(browserSession);
+        assertThat(auth("logout", refreshBody(renewedWindowsSession.path("refreshToken").asText()))
+                .statusCode()).isEqualTo(204);
+
+        assertThat(auth("refresh", refreshBody(renewedWindowsSession.path("refreshToken").asText()))
+                .statusCode()).isEqualTo(401);
+        var activeAndroidSession = refresh(renewedAndroidSession);
+        var activeBrowserSession = refresh(renewedBrowserSession);
+        assertThat(get(activeAndroidSession.path("accessToken").asText(), "/v1/models").statusCode())
+                .isEqualTo(200);
+        assertThat(get(activeBrowserSession.path("accessToken").asText(), "/v1/models").statusCode())
+                .isEqualTo(200);
+    }
+
+    @Test
     void concurrentRefreshHasOneWinnerAndReplayRevokesTheWinner() throws Exception {
         var initial = createUserAndLogin("alice");
         String body = refreshBody(initial.path("refreshToken").asText());

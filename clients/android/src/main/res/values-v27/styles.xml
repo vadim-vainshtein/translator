@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="TranslatorTheme" parent="TranslatorTheme.Base">
+        <item name="android:navigationBarColor">#F7F9FC</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

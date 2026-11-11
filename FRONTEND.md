@@ -34,10 +34,21 @@ workspace shows the cost of the current result. Costs use the provider's token
 counts and the configured rates. The interface marks unavailable costs separately.
 The server validates languages, model limits, quotas, and permissions.
 
-Access and refresh tokens are kept only in the current page's memory, with no
-local storage, session storage, or cookies. Reloading or closing the page requires
-signing in again. Expired access tokens are refreshed once; single-use refresh
-tokens are never replayed after an uncertain refresh outcome. Failed translation
+The browser saves the refresh token and username in local storage and restores
+the login after reloading or reopening the page. Passwords and access tokens stay
+in page memory. Each tab exclusively owns its saved session using Web Locks.
+New tabs restore an available saved session or accept a separate login when all
+saved sessions are in use. Accounts can have any number of independent sessions.
+**Выйти** removes and revokes only the current tab's session.
+
+Persistence requires HTTPS or a loopback origin, Web Locks support, and writable
+local storage. When these are unavailable, the footer reports that login lasts
+only until the page is closed. Saved sessions belong to the browser profile and
+origin. Use a trusted browser profile, and sign out to remove the saved login.
+The server session lifetime applies, 30 days by default. Expired or revoked
+sessions require sign-in. The saved credential is removed before refreshing so
+single-use refresh tokens are never replayed after an uncertain outcome or page
+closure during refresh. Failed translation
 requests are not retried automatically, except after an explicit authentication
 rejection and successful token refresh. **Выйти** calls the existing logout API
 and clears the local session; a server failure is reported to the user.
@@ -51,3 +62,6 @@ token with the `users:create` scope, which the server grants to `admin`.
 Use `./mvnw verify` or `.\mvnw.cmd verify` with JDK 21 and Docker for validation;
 `-Dtest=FrontendAccessTest test` checks public assets and protected routes without
 requiring Docker or a provider.
+
+Run `node --test src/test/js/session-store.test.cjs` to exercise browser session
+restoration, parallel tabs, logout isolation, and storage/transport failures.

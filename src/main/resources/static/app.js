@@ -61,6 +61,7 @@
         session: null, models: [], authBusy: false, creatingUser: false,
         translating: false, loadingWorkspace: false, refresh: null, detectedSource: null, costRevision: 0
     };
+    const sessionStore = new BrowserSessionStore();
     const customLanguage = "__custom__";
     const includeUsagePreferenceKey = "translator.includeUsage";
     const languageNames = new Map(languages);
@@ -230,6 +231,7 @@
         if (!tokens?.accessToken || !tokens?.refreshToken || !Number.isFinite(tokens.expiresIn)) {
             throw new RequestError("Сервер вернул некорректную сессию. Войдите снова.");
         }
+        sessionStore.save(tokens.refreshToken, ui.username.value);
         state.session = {
             ...tokens,
             expiresAt: Date.now() + tokens.expiresIn * 1000,
@@ -238,6 +240,12 @@
     }
 
     function clearSession() {
+        let cleanupWarning = "";
+        try {
+            sessionStore.clear();
+        } catch {
+            cleanupWarning = "Не удалось удалить сохранённый вход из хранилища браузера.";
+        }
         state.session = null;
         state.costRevision++;
         state.models = [];
@@ -248,6 +256,7 @@
         ui.model.replaceChildren(new Option("Войдите для выбора модели", ""));
         ui.totalCost.textContent = "";
         invalidateResult();
+        return cleanupWarning;
     }
 
     async function refreshSession() {
@@ -258,11 +267,13 @@
             const refreshToken = state.session.refreshToken;
             state.refresh = (async () => {
                 try {
+                    sessionStore.clear();
                     saveSession(await request("/v1/auth/refresh", { body: { refreshToken } }));
                 } catch (error) {
                     // A lost response may have consumed the single-use token. Never replay it.
-                    clearSession();
-                    showMessage(ui.authMessage, "Не удалось обновить сессию. Войдите снова. " + error.message);
+                    const cleanupWarning = clearSession();
+                    showMessage(ui.authMessage, "Не удалось обновить сессию. Войдите снова. "
+                        + error.message + " " + cleanupWarning);
                     throw error;
                 }
             })().finally(() => { state.refresh = null; });
@@ -534,6 +545,7 @@
         const refreshToken = state.session.refreshToken;
         state.authBusy = true;
         updateControls();
+        const cleanupWarning = clearSession();
         let warning = "";
         try {
             await request("/v1/auth/logout", { body: { refreshToken } });
@@ -541,9 +553,10 @@
             warning = "Вход в этой вкладке завершён, но сервер не подтвердил отзыв сессии. " + error.message;
         } finally {
             state.authBusy = false;
-            clearSession();
+            warning = [warning, cleanupWarning].filter(Boolean).join(" ");
             showMessage(ui.authMessage, warning || "Вы вышли из аккаунта.", !warning);
             ui.username.focus();
+            updateControls();
         }
     });
 
@@ -654,5 +667,36 @@
     } catch {
         ui.includeUsage.checked = false;
     }
-    updateControls();
+    async function restoreSession() {
+        state.authBusy = true;
+        updateControls();
+        try {
+            if (!await sessionStore.open()) {
+                element("session-status").textContent =
+                    "Сохранение входа недоступно. Используйте HTTPS и разрешите локальное хранилище.";
+            }
+            const saved = sessionStore.load();
+            if (saved) {
+                ui.username.value = saved.username;
+                showMessage(ui.authMessage, "Восстановление сессии…");
+                sessionStore.clear();
+                saveSession(await request("/v1/auth/refresh", {
+                    body: { refreshToken: saved.refreshToken }
+                }));
+                showMessage(ui.authMessage);
+                await loadWorkspace();
+            }
+        } catch (error) {
+            if (!state.session) {
+                showMessage(ui.authMessage, "Не удалось восстановить сессию. Войдите снова. " + error.message);
+            } else {
+                showMessage(ui.message, error.message);
+            }
+        } finally {
+            state.authBusy = false;
+            updateControls();
+        }
+    }
+
+    restoreSession();
 })();

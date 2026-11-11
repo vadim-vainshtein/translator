@@ -7,6 +7,12 @@ database. Local accounts and refresh-token hashes are persisted separately.
 The service supports source-language detection and records estimated provider
 costs for requests with known pricing and usage.
 
+## Client applications
+
+The repository includes a browser interface and native Windows and Android
+clients. See [Browser frontend](FRONTEND.md) for the web interface and
+[Windows and Android clients](clients/README.md) for builds and installation.
+
 ## Run with Docker
 
 Requirements: Docker with Linux containers and Docker Compose v2.23.1 or newer

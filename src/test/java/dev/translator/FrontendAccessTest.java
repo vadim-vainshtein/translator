@@ -70,9 +70,15 @@ class FrontendAccessTest {
         assertThat(script.statusCode()).isEqualTo(200);
         assertThat(script.body()).contains("/v1/translations", "/v1/auth/login");
 
+        var sessionStore = get("/session-store.js", null);
+        assertThat(sessionStore.statusCode()).isEqualTo(200);
+        assertThat(sessionStore.body()).contains("class BrowserSessionStore");
+        assertThat(page.body()).contains("/session-store.js");
+
         assertThat(get("/application.yaml", null).statusCode()).isEqualTo(401);
         assertThat(get("/actuator/health", null).statusCode()).isEqualTo(401);
         assertThat(post("/app.js", null).statusCode()).isEqualTo(401);
+        assertThat(post("/session-store.js", null).statusCode()).isEqualTo(401);
     }
 
     @Test
